@@ -1,8 +1,8 @@
 # Measles Firewall
 
-> One worried parent's question goes in. The whole public-health response comes out: in their language, on the clock, and checked before anything is sent.
+> A worried parent says where they were and who was with them. In seconds they get a checked answer: whether it matches an exposure, how much time they have, who to call, and a note for daycare. It never says "you're safe."
 
-Hack Western 13 · Sun Life Best Health Hack · Team brief · Revised November 21, 2026, 3pm (merged with a teammate's brief)
+Hack Western 13 · Sun Life Best Health Hack · Team brief · Revised November 21, 2026, 3:30pm (updated to the v2 wireframes)
 
 **Pitch line:** "Help Toronto hold the line until 2027."
 
@@ -12,14 +12,14 @@ Hack Western 13 · Sun Life Best Health Hack · Team brief · Revised November 2
 
 - **Event:** Hack Western 13 at Western University, November 20 to 22, 2026. Theme: *Discover the unknown*.
 - **Hacking window:** 9pm Friday, Nov 20 to 9am Sunday, Nov 22. Work done outside the window is disqualified.
-- **Team:** 4 people. Goal: done by Saturday night, rehearse Sunday morning. As of 3pm Saturday that's about 9 hours of build.
-- **Wireframes (in progress):** [Measles Firewall wireframes](https://claude.ai/artifact/K4o73XKtbskoLfrbqpx3i2)
+- **Team:** 4 people. Goal: done by Saturday night, rehearse Sunday morning. As of 3:30pm Saturday that's about 8 hours of build.
+- **Design:** [Measles Firewall designs (v2)](https://claude.ai/artifact/ArmAKaewqRhTSDFpLWpaqy). This brief follows v2. The v1 wireframes are out of date.
 - **Our track: Best Health Hack (Sun Life).** "Creative technical solution to a real health problem. Pitch must show who it helps and potential impact." Prize: a $100 Amazon gift card per member.
 - **Also enter:**
-  - **TinyFish, Hire Your First AI Employee.** The Exposure Scout and Clinic Finder do browser jobs on the live web: watching public-health pages for changes and checking clinic pages. To qualify, post the demo on X or LinkedIn and tag TinyFish. Student credits: [tinyfish.ai/students](https://tinyfish.ai/students).
-  - **MLH Best Use of Gemini API:** multilingual agents, reading records, and the safety reviewer.
+  - **TinyFish, Hire Your First AI Employee.** The Exposure Parser does a browser job on the live web: it watches TPH and PHO pages for new exposure notices. To qualify, post the demo on X or LinkedIn and tag TinyFish. Student credits: [tinyfish.ai/students](https://tinyfish.ai/students).
+  - **MLH Best Use of Gemini API:** the Navigator, the Writer, and the parallel Safety Reviewer checks.
   - **Overall** (iPad / AirPods Pro 3 / Fitbit Air per member).
-  - **Optional, MLH Best Use of Auth0:** "Auth0 for AI Agents," so a parent approves before an agent sends anything on their behalf.
+  - **Optional, MLH Best Use of Auth0:** "Auth0 for AI Agents," so a parent approves before anything is shared on their behalf.
 - **How judges score** (equal weight, as far as we know): Innovation & Creativity, Technical Complexity, Completeness, Design. Judges penalize unoriginal ideas.
 - **Long term:** a hackathon project that could become a civic-tech startup.
 
@@ -43,49 +43,73 @@ Hack Western 13 · Sun Life Best Health Hack · Team brief · Revised November 2
 - **The target is 95%.** PAHO stresses keeping vaccination coverage at 95%. An average doesn't help a community sitting far below it.
 
 **The gap we fill:** when an exposure notice goes up, a parent has to answer four questions fast, often in their second language:
-1. Was my kid there?
+1. Was I there at the same time?
 2. How much time do I have?
-3. Is my kid protected?
-4. Where do I go, and what do I tell the school?
+3. Who do I call, and what do I need ready?
+4. What do I tell daycare?
 
-Each answer sits on a different website, and some of the answers expire within 72 hours. Meanwhile, public-health teams have to reach each community in its own language, through messengers it trusts, without stigmatizing anyone.
+Each answer sits on a different website, and some of them expire within 72 hours.
 
-**Who it helps:**
-- Toronto families, especially newcomers and families in under-vaccinated communities.
-- The TPH and community health workers who have to reach them.
-- **The MVP is built for Toronto.** York and Peel are next, then any health unit.
+**Who it helps:** Toronto families, especially parents of babies and families who are more comfortable in a language other than English. The MVP is built for Toronto; York and Peel are next, then any health unit.
 
 ---
 
 ## The idea
 
-Measles Firewall is a neighbourhood-level measles response cell made of AI agents. It has two screens.
+There are two screens:
 
-1. **Parent mode:** a parent asks one question in any language and gets one answer: whether they were exposed, how long they have, whether their kids are protected, where to go, and a note for the school.
-2. **Response cell mode:** for public-health and community workers. A live exposure feed, outreach drafts for every community at once, the concerns people are actually raising, and a reviewer that every message must get past.
+1. **The parent's phone:** a short, calm flow. Where were you, who was with you, then the result, the next steps, and a note for daycare.
+2. **The swarm console (desktop):** the demo screen beside it. It shows every step the agents took to answer that one parent, including each draft the Safety Reviewer blocked and why.
 
-**The swarm calculates time windows and refers people to public health. It never decides on treatment.**
+**The app calculates time windows and refers people to public health. It never decides on treatment, and it never tells anyone they're safe.**
 
-### The agents
+### Agents and code tools
 
-| Agent | Does | Uses | Hands off |
-|---|---|---|---|
-| **Exposure Scout** | Pulls exposure sites from TPH news releases and the Public Health Ontario (PHO) exposure list | TinyFish on live pages; Gemini to extract fields | Location, date, time window, "monitor until" date |
-| **Exposure Matcher** (plain code) | Matches "I was at X on day Y" against the exposure records and applies the time-window rules: hours since exposure, which windows are still open | The rules file | Overlap yes/no, open windows with closing times, who is high-risk |
-| **Record Detective** | Helps the parent *find* their child's record, then *reads* it and checks it against the schedule | Guidance on Ontario's online system (ICON); Gemini to read typed dates or a photo of the record; **plain code** for the schedule check | Doses found, doses due |
-| **Clinic Finder** | Finds the nearest place to get the measles vaccine, with transit and language information | Doctor's offices (anyone), TPH community clinics (school-aged kids); TinyFish to check live clinic pages | 3 options with hours and links |
-| **Community Voice** (one per language or community, running in parallel) | Adapts approved public-health wording for its community: a school newsletter blurb, a voice-note script, a flyer | Approved TPH and PHO text, each community's framing guide, Gemini | Drafts to the dissenter |
-| **Hesitancy Listener** | Summarizes the concerns people actually raise, with identities removed, so outreach answers real worries | Anonymized questions from parent mode, notes from outreach workers | Weekly themes that shape the Voices' drafts |
-| **Clinical Safety Reviewer ("the dissenter")** | Checks every message against official guidance and the rules before it can be shown or sent. It can block anything, and every objection is logged and shown | The rules file, official guidance documents, hard rules | Pass with citations, fix, or block, plus the objection log |
+The v2 design splits the work into **AI agents** (reading, writing, judging) and **code tools** (anything that must be exactly right).
 
-**Why a swarm:**
-- Every community needs different messengers and framing, so the Voices work in parallel instead of in one long queue.
-- The dissenter can say no to any agent, including the others' best drafts. That is what makes this a swarm and not a single chatbot.
+| AI agent | Does | Hands off |
+|---|---|---|
+| **Exposure Parser** (runs in the background) | Pulls TPH news releases and the Public Health Ontario (PHO) exposure list with TinyFish, and turns each notice into structured fields | Place, exposure window, "watch until" date, source |
+| **Navigator** | Talks to the parent. Turns what they entered into a structured request, calls the code tools, and puts together the result screens in the parent's language | The request; the result |
+| **Writer** | Drafts the note to daycare from approved TPH wording, in the chosen language, with placeholders for names | Drafts to the Safety Reviewer |
+| **Safety Reviewer ("the dissenter")** | Five checks run **at the same time** on every draft. Any one failure sends the draft back to the Writer with the reason | Approved note, or a block with reasons |
 
-**Important caveats the app shows:**
-- **The PHO exposure list is incomplete.** It only includes sites where public health couldn't reach everyone who was exposed. If a place isn't listed, the app says plainly that this doesn't mean nobody was exposed there, and still gives TPH's number.
+| Code tool (not AI) | Does |
+|---|---|
+| `match()` | Place and time overlap between the visit and a parsed notice |
+| `rules()` | Time windows and flags, from the rules table below |
+| `records()` | Dose guide by age, from Ontario's schedule |
+| `clinics()` | Nearby options: family doctor, TPH community clinics |
+
+### The five checks (fix #1)
+
+Each draft is checked five ways at once. Every check lights up on the console as it finishes.
+
+| Check | How it runs | Example it catches |
+|---|---|---|
+| **Facts match the notice** | Gemini, comparing the draft with the parsed notice | Wrong place, date or time |
+| **Time windows are right** | **Code**, comparing every date or duration in the draft with `rules()` output | "You have 6 days to get your baby the MMR vaccine" (the vaccine window is 72 hours) |
+| **Never says you're safe** | Gemini | "Your baby was probably far from the patient, so there's likely no need to call" |
+| **No medical advice** | Gemini, plus a hard rule: no treatment recommendations | "Get your baby the immune globulin shot" |
+| **Doesn't blame a group** | Gemini | "Measles is coming from unvaccinated families in [neighbourhood]" |
+
+- **The retry loop:** the Writer gets up to 3 tries. Each blocked draft goes back with the failed check's reason.
+- **Fails closed:** if all 3 are blocked, the parent sees "We couldn't prepare your note" and TPH's number, never an unchecked note.
+- **Drafts in other languages:** they're translated back into English before checking. Each check sees both the original and the back-translation.
+
+### Why it's a swarm
+
+- Five specialist reviewers run in parallel, and any one of them can veto.
+- The Writer and the reviewers argue in a loop until a draft passes or the app fails safely.
+- The Parser works on its own in the background, watching live public-health pages.
+- The Navigator coordinates the code tools so the parent never waits on one long chain.
+- **Stretch:** the Writer drafts every language on the note screen at once.
+
+### Caveats the app shows
+
+- **The PHO exposure list is incomplete.** It only includes sites where public health couldn't reach everyone who was exposed. A "no match" result says this plainly and still gives TPH's number.
 - **Record gaps:**
-  - People 16 and older have to access their own records.
+  - People 16 and older access their own records.
   - People born before 1994 may have no public-health record on file.
   - For adults, fall back to the paper record (the "yellow card") or a doctor's record.
 
@@ -93,7 +117,7 @@ Measles Firewall is a neighbourhood-level measles response cell made of AI agent
 
 ## The rules (plain code, not the LLM)
 
-These rules override every agent. They live in one reviewed file with a source for each line, never in a prompt.
+These rules override every agent. They live in one reviewed file with a source for each line, never in a prompt. `rules()` implements them.
 
 | # | Rule | Source |
 |---|---|---|
@@ -104,146 +128,118 @@ These rules override every agent. They live in one reviewed file with a source f
 | 5 | Exposed infants, pregnant people and immunocompromised people: **call TPH right away at 416-338-7600** (or 311) | [TPH measles page](https://www.toronto.ca/community-people/health-wellness-care/diseases-medications-vaccines/measles/) |
 | 6 | Ontario schedule: one dose of MMR at 1 year, and one dose of MMRV at 4 to 6 years. During outbreaks, infants aged 6 to 11 months can get one MMR dose | [PHO routine and outbreak schedule](https://www.publichealthontario.ca/-/media/Documents/M/25/mmr-routine-outbreak-vaccine-schedule.pdf) |
 
-**How the Matcher uses them:**
-- **Count from the earliest possible exposure.** Windows start at the earliest time the person could have been exposed (the start of the overlap with the notice), so deadlines are never later than they should be.
-- **Watch-until date.** Use the notice's own "monitor until" date when it gives one. Otherwise use exposure plus 21 days.
-- **The 2-hour rule.** If a notice only gives when the sick person was there, add 2 hours to the end of the window (rule 4). Check how TPH writes its windows first; most notices already include this.
-- **Output is information and a referral, never treatment.** For example: "Your 72-hour window closes tomorrow at 2pm. Call TPH now; they'll tell you what's right for your baby."
+**How the code tools use them:**
+- **Windows count from the start of the notice's exposure window.** That's simpler than asking parents for exact times, and the deadlines are never later than they should be.
+- **Watch-until date:** use the notice's own "watch until" date when it gives one, otherwise exposure plus 21 days.
+- **The output is information and a referral, never treatment.** For example: "Call TPH now. They'll tell you what protection your baby needs."
 
 ---
 
-## Parent mode, step by step
+## The parent's phone, screen by screen
 
-**The demo case:** a mom types in Tagalog (use whichever language a teammate can check): *"I was at the kids' clinic at Scarborough General on Friday afternoon with my 9-month-old and my 5-year-old. Are they protected?"*
+**Demo case:** a parent and their 9-month-old were at the Scarborough General ER on Sunday, June 28. Replay mode freezes the clock at **Tuesday, June 30, 10am** and labels it on screen. The notice is a real past TPH notice.
 
-1. **Exposure Scout** finds the matching notice. In the demo this is a replay modelled on the real June 2026 Scarborough exposures, labelled "replay" on screen.
-2. **Exposure Matcher** confirms the visit overlaps the exposure window. Then it starts the clocks:
-   - 44 hours since exposure.
-   - The 72-hour window closes **tomorrow at 2pm**.
-   - The 6-day window closes Thursday.
-   - Watch for symptoms until December 11.
-3. **The baby is under 12 months, so they're high-risk.** The top of the screen, before anything else: **"Call Toronto Public Health now: 416-338-7600."** The countdowns sit underneath.
-4. **Record Detective**, for the 5-year-old:
-   - **Finding the record:** explains where it is. ICON needs the child's Ontario health card number or 10-digit immunization ID, and the app never logs in for the parent. Other options are the yellow card or the family doctor.
-   - **Reading it:** finds one dose of Priorix (a measles vaccine).
-   - **Checking it:** plain code compares it to the Ontario schedule. The second dose is due now.
-5. **Clinic Finder** returns the nearest options: a TPH community clinic for the 5-year-old and the family doctor, with transit directions and whether Tagalog is spoken there.
-6. A **Community Voice** agent writes the note to the 5-year-old's school: an English copy to send, and a Tagalog copy so the mom knows what it says. It's built from approved TPH wording.
-7. **The dissenter** stamps everything with citations, and its objection log is one tap away.
+| # | Screen | What happens | Who runs |
+|---|---|---|---|
+| 1 | **Where were you?** | Search for a place, or tap a recent exposure site. "Nothing you type is saved. Emergency? Call 911." | Exposure Parser (the list) |
+| 2 | **Who was with you?** | Me, a baby under 1, a child, someone pregnant, someone with a weak immune system | Navigator |
+| 3 | **Checking** | Shows each step as it runs: notices parsed, `match()`, `rules()`. "How we check" link | Navigator, `match()`, `rules()` |
+| 4 | **Result** | "You may have been exposed." An orange box: "A baby was with you. Call Toronto Public Health now." The countdowns: vaccine window **21 h** (closes Wed Jul 1, 7am), immune globulin **3 d 21 h** (closes Sat Jul 4, 7am), watch for symptoms **to Jul 19** | `rules()` |
+| 4b | **No match** (to add) | "We didn't find this place in the notices. That doesn't mean nobody was exposed there; the list isn't complete." TPH's number | `match()` |
+| 5 | **What to do next** | Three steps, in order: (1) call TPH, (2) have the vaccine record ready (ICON with the health card number, or the yellow card; at 9 months the first dose isn't due yet), (3) go where public health sends you | `records()`, `clinics()` |
+| 6 | **Writing the note** | "Writing your note," then "Checking it against the TPH notice" | Writer, Safety Reviewer |
+| 7 | **Note ready** | Language options (English, Français, 中文, தமிழ், more), the note with [CHILD NAME] and [YOUR NAME] filled in on the phone, "Checked against the TPH notice," then Copy or Share | Writer, Safety Reviewer |
+| 8 | **If checking fails** | "We couldn't prepare your note. To keep you safe, we only show notes that pass our checks." Call TPH, or Try again | Safety Reviewer |
+| 9 | **How we check** | A pop-up panel: matched to the official notice; time windows use fixed rules, not AI guesses; a second check before you see it; "We never say you're safe" | — |
+
+**Names never leave the phone.** The Writer only ever sees placeholders, and the real names are filled in by the browser.
 
 ---
 
-## Response cell mode
+## The swarm console (the visual)
 
-- **Exposure feed and map:** every active notice from TPH and PHO, with clinics plotted around it.
-- **Outreach board:**
-  - When a notice lands, one Community Voice agent per language starts adapting TPH's approved wording at the same time. For example: Tamil, Tagalog, Traditional Chinese, Punjabi and Spanish.
-  - Each draft is translated back into English and checked again, so a meaning that drifted in translation gets caught.
-  - **Languages Gemini handles poorly** go to a human translator. For example Low German, spoken by many of the Mennonite families hit hardest in 2025. The system knows when not to trust itself.
-- **Hesitancy themes:** this week's concerns with counts and anonymized example questions. These feed straight into the Voices' drafts.
-- **The dissenter's column:** every draft marked passed, fixed or blocked, with the objection and the source it checked against.
+The console sits next to the phone during the demo. It shows the agents working on that one request.
 
-### What the outreach drafts are for
-
-Parent mode is one parent asking one question. Outreach goes the other way: public health sends one message to a whole community.
-
-**What they are:**
-- a school newsletter blurb
-- a voice-note script a community leader can send to a WhatsApp group
-- a flyer for a community centre or place of worship
-
-**There are two kinds:**
-
-| Kind | When | Example |
-|---|---|---|
-| Exposure alert | A notice goes up | "If you were at the kids' clinic at Scarborough General on Friday between 8am and 3pm, check your family's vaccines and watch for symptoms until December 11. If you have a baby under one, or you're pregnant or immunocompromised, call TPH now." Sent to families likely to have been there. |
-| Catch-up campaign | Any time, but especially now, between outbreaks | "Kids need two doses of measles vaccine. Free TPH clinic this Saturday." The "firewall" part: get every community to 95% before the next imported case. |
-
-**Who uses them:** a public-health nurse, a school principal, a community health worker, or a faith leader. The app only drafts. A person edits, approves and sends it through their own channel. Nothing goes out automatically.
-
-**Why they matter:**
-- Parent mode only helps parents who are already worried enough to ask.
-- The outbreak spread mostly in under-vaccinated communities, where people are least likely to open an app or trust an official notice in English.
-- Outreach reaches them through people they already trust, in their own language.
-- A health unit can't adapt and translate ten versions of every message by hand in an afternoon. The Community Voice agents can.
-
-**Why it matters for the build:** the Voices drafting for several communities at once, plus a dissenter that can block any of them, are what make this a swarm and not a pipeline of agents in a row.
-
-**If time runs short:** the school note in parent mode is already one outreach draft. Shrink the response cell to a single 30-second moment: one alert, five Voices drafting it at once, each getting past the dissenter.
+- **Sidebar:** the four agents with live status (the Parser's last run, the Writer's draft count, the Reviewer's blocked and approved counts), then the four code tools labelled "Code tools · not AI," then "Demo mode: uses past public TPH notices. No real parent data."
+- **Live request:** what the parent asked, plus counters for drafts, blocked and approved.
+- **Writer → Safety Reviewer:** one card per draft. All five checks start at once and tick or cross as each finishes. Blocked drafts are crossed out with the failed check's reason. The approved draft gets a bold border.
+- **Run trace:** Navigator → `match()` → `rules()` → Writer → Reviewer, with what each step found.
+- **Latest notice parsed:** the raw TPH text next to the fields the Parser pulled out.
+- **What the parent sees:** the final note, exactly as the phone shows it.
+- **Demo speed:** each step stays on screen for a moment so judges can follow. The events are real; only the display is slowed down.
 
 ---
 
 ## The core trick
 
-**Gemini reads and writes. Plain code decides. The dissenter gates.**
+**Gemini reads and writes. Plain code decides. Five checks gate everything.**
 
-- **Gemini's jobs:** pull fields out of messy notices and records, adapt approved wording, translate, summarize concerns, and act as the dissenter.
-- **Plain code's jobs:** every date, countdown, dose count, exposure overlap, "high-risk," "due now" and distance, computed from the rules file and official data. A model never decides whether a child is protected or what treatment they need.
-- **The gate:** a send or export button only exists on a message that has passed review. There is no path around it.
+- **Gemini's jobs:** parse notices, run the conversation, write drafts, back-translate, and run four of the five checks.
+- **Plain code's jobs:** every overlap, date, countdown, high-risk flag, dose and distance, plus the time-window check.
+- **The gate:** the phone only renders a note that has passed all five checks. There is no path around it.
 
-**What the Scout and the Record Detective hand to the code:**
+**What the Navigator hands to the code tools:**
 
 ```json
 {
-  "exposure": {
-    "site": "Scarborough General Hospital, kids' outpatient clinic (replay)",
-    "start": "2026-11-20T08:00",
-    "end": "2026-11-20T15:00",
-    "monitorUntil": "2026-12-11",
-    "healthUnit": "Toronto Public Health",
-    "noticeQuote": "Anyone exposed should check that they've been fully vaccinated...",
-    "sourceUrl": "https://..."
-  },
-  "visit": { "start": "2026-11-20T14:00", "end": "2026-11-20T15:00" },
-  "now": "2026-11-22T10:00",
-  "people": [
-    { "label": "baby", "born": "2026-02-10", "doses": [] },
-    { "label": "older child", "born": "2021-03-02", "doses": [{ "date": "2022-03-10", "product": "Priorix" }] }
-  ]
+  "place": "Scarborough General Hospital, ER",
+  "visit": { "date": "2026-06-28", "approx": "9–11 a.m." },
+  "people": ["me", "baby_under_1"],
+  "now": "2026-06-30T10:00"
 }
 ```
 
-**What the code returns:**
+**What the Parser stored for that notice:**
 
 ```json
 {
-  "visitOverlapsExposure": true,
-  "hoursSinceExposure": 44,
+  "site": "Scarborough General Hospital, emergency waiting room",
+  "start": "2026-06-28T07:00",
+  "end": "2026-06-28T13:30",
+  "watchUntil": "2026-07-19",
+  "source": "Toronto Public Health notice"
+}
+```
+
+**What `match()` and `rules()` return:**
+
+```json
+{
+  "match": true,
+  "flags": ["infant_present"],
+  "action": "call_tph_now",
   "windows": {
-    "mmr72h": { "closes": "2026-11-23T14:00", "open": true },
-    "immuneGlobulin6d": { "closes": "2026-11-26T14:00", "open": true },
-    "watchSymptomsUntil": "2026-12-11"
-  },
-  "people": [
-    { "label": "baby", "ageMonths": 9, "highRisk": true, "action": "call_tph_now" },
-    { "label": "older child", "measlesDoses": 1, "status": "due", "next": "second dose (routine at 4 to 6 years)" }
-  ]
+    "vaccine72h": { "closes": "2026-07-01T07:00", "left": "21h" },
+    "immuneGlobulin6d": { "closes": "2026-07-04T07:00", "left": "3d 21h" },
+    "watchUntil": "2026-07-19"
+  }
 }
 ```
 
-**The rules code:**
-- It's one plain TypeScript file, with tests.
-- **The Matcher's tests:**
+**What the Safety Reviewer returns for a blocked draft:**
+
+```json
+{
+  "draft": 2,
+  "checks": {
+    "factsMatchNotice": "pass",
+    "timeWindowsRight": { "result": "fail", "reason": "says 6 days for MMR; the vaccine window is 72 hours (rule 1)" },
+    "neverSaysSafe": "pass",
+    "noMedicalAdvice": "pass",
+    "noBlame": "pass"
+  },
+  "verdict": "blocked"
+}
+```
+
+**Code notes:**
+- The code tools are one plain TypeScript file, with tests:
   - right at the 72-hour and 6-day boundaries
   - an infant under 12 months
-  - a notice without a "monitor until" date
-  - a visit that only touches the 2-hour tail of a window
-- **The schedule checker:**
-  - Maps vaccine brand names: M-M-R II and Priorix are MMR, ProQuad and Priorix-Tetra are MMRV.
-  - Applies rule 6.
-  - Checks minimum ages and minimum gaps between doses.
-  - Reads records from other countries after Gemini extracts them. It shows a "confirm with your doctor or TPH" note.
-
-**How the dissenter works:**
-1. It splits each message into claims.
-2. Each claim must match the approved wording, the rules file, or a passage in the official guidance. Otherwise it's blocked.
-3. Hard rules on top:
-   - Exposure messages must include TPH's contact.
-   - Nothing recommends a treatment. "Get the immune globulin shot" is blocked and replaced with "call TPH; they'll tell you whether preventive treatment is right."
-   - No message names a community as the cause.
-   - Every number must match its source.
-4. Every objection is logged with the claim, the reason, and the source.
-5. **No vector database.** The official documents fit in Gemini's context window, so load the whole set into every review call.
+  - a notice without a "watch until" date
+  - a place that isn't in the notices
+- The five checks are five Gemini calls plus one function, run together with `Promise.all`.
+- The official documents fit in Gemini's context window, so load the whole set into each check. There's no vector database.
 
 ---
 
@@ -251,19 +247,20 @@ Parent mode is one parent asking one question. Outreach goes the other way: publ
 
 | Existing | What it does | What's missing |
 |---|---|---|
-| Health unit exposure pages | List places and times | Nothing personal: you still have to work out whether it affects your kid and how long you have |
-| ICON and other record portals | Show the doses on file | Don't tell you what's due, where to go, or say it in your language |
-| General AI chatbots | Answer health questions | Can invent facts or suggest treatment, and nothing checks them before you act |
-| Translation services | Translate one message at a time | Slow, and blind to framing and trusted messengers |
+| Health unit exposure pages | List places and times | Nothing personal: you still have to work out whether it affects your baby and how long you have |
+| ICON and other record portals | Show the doses on file | Don't tell you what to do next or say it in your language |
+| General AI chatbots | Answer health questions | Can invent facts, suggest treatment, or falsely reassure, and nothing checks them |
 
-**Our standout:** one question goes in and the whole response comes out at once, in your language, with the clock running. Nothing reaches a parent or a community without getting past a dissenter that cites its sources.
+**Our standout:**
+- A time-critical answer that's calculated, not guessed.
+- Every message is checked five ways at once before a parent sees it.
+- When checking fails, the app fails closed and sends you to public health.
 
 **Technical complexity:**
-- agents running in parallel with a hard review gate and an objection log
-- a tested rules engine for time windows and schedules
-- structured extraction from live web pages and from photos of records, including records from other countries
-- back-translation checks
-- live checks on real public-health and clinic sites
+- a live web agent watching public-health pages
+- a tested rules engine for time windows
+- a Writer-and-reviewers loop with five parallel checks, back-translation and fail-closed behaviour
+- a console that shows the whole run as it happens
 
 ---
 
@@ -271,42 +268,48 @@ Parent mode is one parent asking one question. Outreach goes the other way: publ
 
 **Stack:**
 - Next.js and TypeScript.
-- Gemini for structured output (extraction), vision (records), multilingual adaptation, and the dissenter. Check the current model names in Gemini's docs before wiring them up.
-- TinyFish for the live pages: TPH news releases, the PHO exposure list, and clinic pages.
-- Agents are plain async TypeScript functions. Voices run in parallel with `Promise.all`. No agent framework.
-- Server-sent events stream each agent's progress to the screen, so the swarm visibly works in parallel.
+- Gemini for parsing, the Navigator, the Writer, back-translation and four of the checks. Check the current model names in Gemini's docs before wiring them up.
+- TinyFish for the live TPH and PHO pages.
+- Agents are plain async TypeScript functions. The checks run in parallel with `Promise.all`. No agent framework.
+- Server-sent events stream every step to the console, and the progress steps to the phone.
 - The rules file, the approved wording and the official documents as files in the repo.
-- **Stateless:** no database, no accounts. Never store health card numbers, immunization IDs or records, because storing them brings in Ontario's health privacy law (PHIPA). Demo data only.
+- **Stateless:** no database and no accounts. Never store health card numbers, immunization IDs, records or names; storing them brings in Ontario's health privacy law (PHIPA). Demo data only.
 
 **Team split:**
 
 | Role | Owns |
 |---|---|
-| Scouts | Exposure Scout and Clinic Finder on TinyFish, the TPH and PHO parsers, the replay notice, the clinic list with transit and languages |
-| Rules and records | The rules file, the Exposure Matcher, the schedule checker and their tests, the Record Detective (finding and reading records) |
-| Voices and the dissenter | Community Voice agents and the approved-wording library, back-translation, Hesitancy Listener, the dissenter and its objection log, collecting the official documents |
-| Frontend and story | Parent mode and response cell from the wireframes, the map, pitch, Devpost, the TinyFish social post, backup video |
+| Parser and data | Exposure Parser on TinyFish (TPH and PHO), the replay notices, the clinic data behind `clinics()` |
+| Code tools | `match()`, `rules()`, `records()`, `clinics()` and their tests |
+| Writer and Reviewer | Writer prompts and approved wording, the five checks, back-translation, the retry loop and fail-closed behaviour, collecting the official documents |
+| Frontend and story | The phone flow and console from v2, pitch, Devpost, the TinyFish social post, backup video |
 
-**Build order (from 3pm Saturday):**
-1. **By about 5:30pm:**
-   - The rules file and Matcher pass their tests.
-   - The official documents and approved wording are collected.
-   - The Scout parses one real TPH or PHO page.
-   - Parent mode renders fake agent events, following the wireframes.
-2. **By about 9pm:** parent mode works end to end on the replay: notice, countdowns, high-risk banner, record, clinic, school note, dissenter.
-3. **By about midnight:** response cell mode with parallel Voices, back-translation, Hesitancy Listener themes, the live clinic check. Record the backup video.
+**Build order (from 3:30pm Saturday):**
+1. **By about 6pm:**
+   - The code tools pass their tests.
+   - The Parser reads one real TPH or PHO page.
+   - The phone screens exist with fake data.
+2. **By about 9pm:** the replay works end to end: place, people, result, next steps, then a note through the Writer and the five checks, with the retry loop and the fail-closed screen.
+3. **By about midnight:**
+   - The console runs live from the agents' events.
+   - Language options on the note.
+   - The no-match screen and the clinic list.
+   - Record the backup video.
 4. **Sunday morning:** rehearse, finish Devpost, and post the demo on X or LinkedIn tagging TinyFish (required to qualify). Submissions close at 9am.
 
 **Scope:**
 - **Must have:**
-  - parent mode end to end on the replay, including both kids
-  - the rules file, Matcher and schedule checker, with tests
-  - the dissenter, with citations and one visibly blocked draft
-  - at least 3 languages
-  - the Scout running on at least one real TPH or PHO page
-- **Should have:** response cell mode, the Hesitancy Listener, back-translation, reading records from other countries, the live clinic check.
-- **Stretch:** Auth0 consent before sending, WhatsApp or SMS export, York and Peel coverage.
-- **Cut:** storing anything, accounts, real personal health information, scraping social media, any treatment decision.
+  - the phone flow end to end on the replay, including the no-match screen
+  - the code tools with tests
+  - the Writer with five parallel checks, one visibly blocked draft, and the fail-closed screen
+  - the console showing the checks live
+  - the Parser running on at least one real page
+- **Should have:**
+  - the note in 3 or more languages, with back-translation
+  - the clinic list
+  - an "Or tell us in your own words, any language" box on screen 1, with the Navigator filling in the form
+- **Stretch:** the Writer drafting all languages at once, Auth0 approval before sharing, York and Peel.
+- **Cut this weekend:** the outreach board and Community Voices, the Hesitancy Listener, reading a photo of the record, storing anything.
 
 ---
 
@@ -315,43 +318,64 @@ Parent mode is one parent asking one question. Outreach goes the other way: publ
 | Time | Beat | Do and say |
 |---|---|---|
 | 0:00–0:20 | Hook | "A year ago Canada lost its measles elimination status. The outbreak's over, but measles keeps landing here: Toronto confirmed five travel-linked cases this year, with exposures in a Scarborough ER and a kids' clinic. The U.S. and Mexico just lost their status too. Experts say November 2027 is the earliest we get ours back. We built a way to help Toronto hold the line." |
-| 0:20–1:20 | Parent mode | The mom's Tagalog question. The agents light up in parallel: notice found (labelled replay), 44 hours since exposure, the 72-hour window closes tomorrow at 2pm, and the baby is under one, so the screen leads with "Call TPH now: 416-338-7600." Meanwhile the 5-year-old's record shows one dose, the second is due, there's a TPH clinic nearby, and the school note is ready in English and Tagalog. |
-| 1:20–1:50 | The dissenter | Open the objection log. A Voice wrote "get your baby the immune globulin shot." Blocked: we never recommend treatment, so it was replaced with "call TPH; they'll tell you whether preventive treatment is right," citing rules 2 and 5. A second draft was flagged for wording that blamed a community. |
-| 1:50–2:35 | Response cell | The notice triggers five Voices at once: Tamil, Tagalog, Traditional Chinese, Punjabi and Spanish, all adapting TPH's approved wording. Each is back-translated and checked. One language goes to a human translator. The Hesitancy Listener's top concern this week (time off work for appointments) is already in the drafts. |
-| 2:35–3:00 | Close | Who it helps: Toronto families and the public-health teams reaching them. Where it goes: other health units, school boards, community health centres, and every vaccine-preventable disease after measles. "Help Toronto hold the line until 2027." |
+| 0:20–1:05 | The phone | Tap the Scarborough General ER on June 28, then "a baby under 1," then Check. The Checking screen shows each step. Result: "You may have been exposed," "Call TPH now," 21 hours left on the vaccine window, 3 days 21 hours on immune globulin, watch until July 19. Then the three next steps. |
+| 1:05–1:50 | The console | Tap "Write a note to daycare." On the console, the Writer's first draft hits the five checks at once: "Never says you're safe" fails ("probably far from the patient"). Draft 2: "Time windows are right" fails (6 days for the vaccine). Draft 3 passes all five and appears on the phone. Switch it to Tamil. |
+| 1:50–2:15 | Fails closed | Show the "If checking fails" screen and the "How we check" panel. "If we can't check it, we don't show it. And we never tell anyone they're safe; only public health can." |
+| 2:15–2:40 | Live web | Hit "Pull new notices." The Parser reads the real TPH and PHO pages through TinyFish right now (probably "no current exposures," which is good news). |
+| 2:40–3:00 | Close | Who it helps: parents, especially of babies, in their own language. What's next: outreach to whole communities through people they trust, other health units, every vaccine-preventable disease. "Help Toronto hold the line until 2027." |
+
+---
+
+## Where it goes next (not built this weekend)
+
+- **Outreach board for public health.** One message to a whole community:
+  - **Exposure alerts** to the families likely to have been at a site.
+  - **Catch-up campaigns** between outbreaks, to get every community to 95% before the next imported case.
+  - Community Voice agents adapt approved wording for each language and community at the same time, then pass the same five checks. A public-health nurse, principal, community health worker or faith leader approves and sends each one through their own channel.
+  - This reaches the families least likely to open an app or trust an official notice in English.
+- **Hesitancy Listener:** summarizes the concerns people actually raise, with identities removed, so outreach answers real worries.
+- **Record reader:** reads a record, including vaccine brand names (M-M-R II and Priorix are MMR, ProQuad and Priorix-Tetra are MMRV) and records from other countries, on the device.
+- **More places and diseases:** York and Peel next, then any health unit, then other vaccine-preventable diseases.
 
 ---
 
 ## Risks and judge questions
 
 - **"Is this medical advice?"** No.
-  - The swarm calculates time windows from published rules and refers people to public health. It never decides on treatment.
-  - Every message cites official guidance.
-  - The dissenter blocks anything that recommends treatment.
+  - The app calculates time windows from published rules and refers people to public health.
+  - It never decides on treatment, and it never says you're safe.
+  - Two of the five checks exist to enforce exactly that.
+- **"Is this really a swarm?"** Yes, in a small way:
+  - five specialist reviewers in parallel, any of which can veto
+  - a Writer that argues with them until a draft passes or the app fails safely
+  - a background agent watching live sites
+  - and we draw the line between AI agents and code tools on purpose.
 - **Health privacy.**
-  - **In the hackathon:** stateless, sample records only, nothing stored. Never store health card numbers, immunization IDs or records; storing them brings in PHIPA.
-  - **A real version:** a data agreement with a health unit, explicit parent consent, and either reading the record on the device or a privacy-compliant agreement that covers the AI provider.
-- **Stigma.**
-  - Messages never name a community as the cause, and they use person-first language. The dissenter checks for both.
-  - A real deployment writes each community's framing guide with community partners. The agents draft *for* trusted messengers, not *as* them.
-  - The Hesitancy Listener summarizes concerns respectfully. It never mocks them.
-- **The exposure list is incomplete.** The PHO list only includes sites where public health couldn't reach everyone exposed. The app says so whenever a place isn't found.
-- **Translation quality.** Back-translation plus a human translator for languages Gemini handles poorly. A teammate who reads one of the demo languages checks those drafts before Sunday.
+  - Nothing is saved, and names are filled in on the phone.
+  - No health card numbers or record photos are collected; the parent opens ICON themselves.
+  - **A real version:** a data agreement with a health unit and explicit parent consent.
+- **Stigma.** Messages name places and dates, never communities. Check 5 enforces this.
+- **The exposure list is incomplete.** The no-match screen says so every time, with TPH's number.
+- **Translation quality.** Non-English drafts are back-translated before the checks. A teammate who reads one of the demo languages checks it before Sunday.
 - **There are no live exposures right now.**
-  - The live Scout shows the real TPH and PHO pages, probably "no current exposures," which is good news.
-  - The story uses a replay modelled on the real June 2026 Scarborough exposures, labelled on screen.
-- **Guidance changes.** Every rule and document shows its source and date, and the dissenter cites the version it checked against.
+  - The story uses a real past notice in replay mode, with the clock frozen at June 30 and labelled on screen.
+  - The live Parser shows the real pages as they are today.
+- **Guidance changes.** Every rule and document shows its source and date.
 - **Being polite to public sites.** Cache pages, check at a low rate, and only read public notices.
 
 ---
 
 ## Open items
 
-- The teammate's original brief was cut off mid-sentence in its privacy section ("Your 72-hour window closes Tuesday..."). Add anything missing.
+- **Design to-dos for v2:**
+  - Add the no-match screen.
+  - Point "Find a clinic near me" somewhere (it currently links to `#`), or remove it.
+  - Have the Checking screen name the steps it's running.
+  - Make the console's "Parent asked" quote match the phone's input (the structured place and people, or the free-text box if we add it).
+- Confirm the Qahwah Cafe (Sep 5) exposure on screen 1 against a real TPH notice, or replace it.
 - Confirm TPH's number (416-338-7600) on the TPH page before the demo.
-- Confirm the "two doses are about 97% effective" figure against an official source if any message uses it.
-- Still to collect for the dissenter: the measles chapter of the Canadian Immunization Guide (written by NACI, Canada's vaccine advisory committee).
-- Line the build up with the wireframes once they're done.
+- Your teammate's original brief was cut off mid-sentence in its privacy section. Add anything that's missing.
+- Still to collect for the reviewers: the measles chapter of the Canadian Immunization Guide (written by NACI, Canada's vaccine advisory committee).
 
 ---
 
