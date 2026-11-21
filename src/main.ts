@@ -6,6 +6,8 @@ import { mountCreator } from "./creator";
 import { dogConfigStore } from "./dog/config";
 import type { DogConfig } from "./dog/types";
 import { createPreview } from "./preview";
+import { initNet } from "./net";
+import { mountRoomUI } from "./net/ui";
 import { createQuickLook, isIOS } from "./quicklook";
 import { arUIFromDOM, isWebXRARSupported, startARSession, type ARUI } from "./webxr";
 
@@ -21,6 +23,8 @@ const cameraVideo = $<HTMLVideoElement>("camera-video");
 const ui: ARUI = arUIFromDOM();
 
 mountCreator($("creator"));
+initNet(); // joins ?room=… when opened from an invite
+mountRoomUI($("home-actions"));
 
 const dogName = (c: DogConfig) => c.name.trim() || "your dog";
 const syncDeployLabel = (c: DogConfig) => {

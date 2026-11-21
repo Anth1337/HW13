@@ -390,6 +390,15 @@ function load(): DogConfig {
   return defaultDogConfig();
 }
 
+/** False on a first visit (nothing saved yet: the store starts from the default labrador). */
+export function hasSavedDogConfig(): boolean {
+  try {
+    return !!globalThis.localStorage?.getItem(STORAGE_KEY);
+  } catch {
+    return false;
+  }
+}
+
 let current: DogConfig | null = null;
 const listeners = new Set<(c: DogConfig) => void>();
 

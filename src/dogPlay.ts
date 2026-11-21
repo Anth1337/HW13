@@ -9,12 +9,13 @@ import { createVoiceListener, parseVoiceCommand, type VoiceListener, type VoiceR
 import { HAND_BONES, createHandOccluder } from "./vision/handOccluder";
 import { liftObservation } from "./vision/lift";
 import type { CameraModel, Observation, Perception, PerceivedPerson, VisionDetector } from "./vision/types";
+import { createPartyLink } from "./net/party";
 
 /*
  * Everything the two "play with the dog" modes share (WebXR AR in webxr.ts and the camera
  * fallback in cameraMode.ts): the cached hand/face detector, the single dog's brain, the hand
- * occluder, petting hearts + haptics, the command / trick / vision buttons, the status chip and
- * the "Show vision" debug drawing.
+ * occluder, petting hearts + haptics, the command / trick / vision buttons, the status chip,
+ * the "Show vision" debug drawing and, when the page is in a room, friends' pets (net/party.ts).
  *
  * Per rendered frame a mode calls, in this order:
  *   if (play.wantsFrame(timeMs)) play.see(image, timeMs, cam)   // fresh camera image only
@@ -210,6 +211,15 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
   let utteranceOpen = false;
   let extendTimer: ReturnType<typeof setTimeout> | null = null;
 
+  const party = createPartyLink(scene, {
+    burst: (point, zone) => fx.burst(point, zone),
+    command: (cmd) => {
+      if (!brain) return;
+      brain.command(cmd);
+      syncButtons();
+    },
+  });
+
   const commandButtons: { button: HTMLButtonElement; cmd: () => DogCommand }[] = [
     { button: ui.cmdSit, cmd: () => (brain?.posture === "sit" ? "stand" : "sit") },
     { button: ui.cmdLie, cmd: () => (brain?.posture === "lie" ? "stand" : "lie") },
@@ -322,6 +332,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
   function fireIntent(command: DogCommand, phrase: string, speaker: number | null, nowMs: number) {
     if (!brain) return;
     brain.command(command, speaker);
+    party?.commanded(command);
     firedCmd = command;
     firedMs = nowMs;
     utteranceOpen = true;
@@ -532,7 +543,9 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     const onClick = () => {
       if (voiceWanted && voiceState === "off") startVoice(); // remembered choice resumes on the first tap
       if (!brain) return;
-      brain.command(entry.cmd());
+      const cmd = entry.cmd();
+      brain.command(cmd);
+      party?.commanded(cmd);
       navigator.vibrate?.(12);
       syncButtons();
     };
@@ -581,6 +594,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       dog = newDog;
       dogClock = 0;
       brain = createDogBrain(newDog, anchor, floorY);
+      party?.attach(newDog, anchor);
       unsubPet = brain.onPetStart((zone, point) => {
         fx.burst(point, zone);
         navigator.vibrate?.(zone === "head" ? 30 : [20, 40, 20]);
@@ -670,8 +684,10 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       if (brain && dog) {
         dogClock += dt;
         brain.update(dt, perception, viewer);
+        party?.beforeDogUpdate(dt);
         dog.update(dogClock);
       }
+      party?.update(dt, perception);
       occluder.update(dt, perception.hands, handOcclusion);
       fx.update(dt);
       syncButtons();
@@ -688,6 +704,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       unsubPet?.();
       unsubPet = null;
       for (const off of cleanups) off();
+      party?.dispose();
       clearExtendTimer();
       releaseVoice();
       voice = null;

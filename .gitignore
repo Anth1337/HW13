@@ -17,6 +17,8 @@ next-env.d.ts
 # Deploy tools
 .vercel/
 .netlify/
+.wrangler/
+.dev.vars*
 
 # Logs
 *.log
