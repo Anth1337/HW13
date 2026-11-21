@@ -1,8 +1,8 @@
 import * as THREE from "three";
-import { TRICK_LABEL, type DogCharacter, type DogCommand, type DogZones, type TrickKind } from "../dog/types";
+import { TRICK_LABEL, type DogCommand, type PetCharacter, type PetZones, type TrickKind } from "../dog/types";
 import type { PerceivedHand, Perception } from "../vision/types";
 import { currentRoom } from "./index";
-import { createPetModel, localPetCard, petName } from "./kinds";
+import { createPetModel, localPetCard, petBuzz, petName } from "./kinds";
 import { RemotePet, type Stage } from "./remotePet";
 import type { Peer } from "./room";
 import { PET_REPEAT_MS, readEvent, readState, wrapAngle, writeState, type PetEvent } from "./sync";
@@ -21,7 +21,7 @@ import { clearFeed, feed, partyButton } from "./ui";
 
 export interface PartyLink {
   /** This phone's pet was placed and given a brain. */
-  attach(dog: DogCharacter, anchor: THREE.Object3D): void;
+  attach(dog: PetCharacter, anchor: THREE.Object3D): void;
   /** After the brain wrote this frame's controls, before dog.update(): friends petting this pet. */
   beforeDogUpdate(dt: number): void;
   /** Once per frame after the pet was posed: send its state, move friends' pets, pet them. */
@@ -34,8 +34,10 @@ export interface PartyLink {
 export interface PartyHooks {
   /** Hearts at a world point. */
   burst(point: THREE.Vector3, zone: "head" | "body"): void;
-  /** Run a command on this phone's pet (someone's party trick). */
+  /** Run a command on this phone's pet (someone's party trick, maybe another species' trick). */
   command(cmd: DogCommand): void;
+  /** This phone's pet's three tricks (the 🎉 button picks one). */
+  tricks: readonly TrickKind[];
 }
 
 const SEND_EVERY_MS = 100;
@@ -64,7 +66,6 @@ const SLOTS: [number, number][] = [
   [0.65, -2.8],
   [-0.65, -2.8],
 ];
-const TRICKS: TrickKind[] = ["rollOver", "jump", "spin"];
 const SHOWN_COMMANDS: Partial<Record<DogCommand, string>> = { ...TRICK_LABEL, sit: "Sit", lie: "Lie down" };
 
 type Touch = { zone: "head" | "body"; held: number; idle: number; active: boolean; sentMs: number };
@@ -80,7 +81,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   const seenPlaying = new Set<string>();
   const pettedFeedMs = new Map<string, number>();
   const cleanups: (() => void)[] = [];
-  let dog: DogCharacter | null = null;
+  let dog: PetCharacter | null = null;
   let anchor: THREE.Object3D | null = null;
   let stage: Stage | null = null;
   const lastPos = new THREE.Vector3();
@@ -92,7 +93,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   let lastPartyMs = -Infinity;
   let connectionLost = false;
   let disposed = false;
-  const zones: DogZones = { head: new THREE.Sphere(), body: new THREE.Sphere() };
+  const zones: PetZones = { head: new THREE.Sphere(), body: new THREE.Sphere() };
   const point = new THREE.Vector3();
 
   const myName = () => petName(localPetCard());
@@ -152,7 +153,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
         if (started && dog) {
           dog.getZones(zones);
           hooks.burst(e.z === "head" ? zones.head.center : zones.body.center, e.z);
-          navigator.vibrate?.(e.z === "head" ? 30 : [20, 40, 20]);
+          navigator.vibrate?.(petBuzz(dog.species, e.z));
           if (now - (pettedFeedMs.get(from.id) ?? -Infinity) >= PETTED_FEED_MS) {
             pettedFeedMs.set(from.id, now);
             feed(`💕 ${ownerOf(from)} is petting ${myName()}`);
@@ -205,7 +206,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
     const now = performance.now();
     if (!dog || now - lastPartyMs < PARTY_COOLDOWN_MS) return;
     lastPartyMs = now;
-    const trick = TRICKS[Math.floor(Math.random() * TRICKS.length)];
+    const trick = hooks.tricks[Math.floor(Math.random() * hooks.tricks.length)];
     hooks.command(trick);
     room.sendEvent({ k: "cmd", c: trick, to: "*" } satisfies PetEvent);
     feed(room.peers.size ? `🎉 Everyone: ${TRICK_LABEL[trick].toLowerCase()}!` : "🎉 Invite friends so their pets join in");
@@ -265,7 +266,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       if (!t.active && t.held >= TOUCH_DWELL_S) {
         t.active = true;
         hooks.burst(point, zone);
-        navigator.vibrate?.(zone === "head" ? 30 : [20, 40, 20]);
+        navigator.vibrate?.(petBuzz(pet.model.species, zone));
       }
       if (!t.active) continue;
       pet.touch(zone, now);

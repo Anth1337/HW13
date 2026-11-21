@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { DogCharacter, DogZones, TrickKind } from "../dog/types";
+import type { PetCharacter, PetZones, TrickKind } from "../dog/types";
 import type { PetCard } from "./protocol";
 import { applyControls, lerp, lerpAngle, type PetState } from "./sync";
 
@@ -44,7 +44,7 @@ export class RemotePet {
 
   constructor(
     readonly card: PetCard,
-    readonly model: DogCharacter,
+    readonly model: PetCharacter,
     name: string,
   ) {
     model.root.traverse((o) => {
@@ -148,7 +148,7 @@ export class RemotePet {
     this.model.update(this.clock);
   }
 
-  zones(out: DogZones): DogZones {
+  zones(out: PetZones): PetZones {
     return this.model.getZones(out);
   }
 

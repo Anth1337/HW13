@@ -143,6 +143,8 @@ function trickEnvelope(kind: TrickKind, p: number): number {
       return sm(0, 0.08, p) * (1 - sm(0.88, 1, p));
     case "spin":
       return sm(0, 0.08, p) * (1 - sm(0.92, 1, p));
+    default:
+      return 0; // another species' trick: a dog never gets one
   }
 }
 
@@ -1386,6 +1388,7 @@ export function createDogCharacter(input: DogConfig): DogCharacter {
   const length = noseWorld.z - (body.position.z - TL / 2 - 0.02 * r);
 
   const dog: DogCharacter = {
+    species: "dog",
     root,
     update,
     config: cfg,

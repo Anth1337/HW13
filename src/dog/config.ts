@@ -1,7 +1,7 @@
 import type { Breed, BreedPreset, CoatPattern, DogConfig, EarStyle, Sex, TailStyle } from "./types";
 
 /*
- * Breed presets, the random "dice" config, validation and the persisted config store.
+ * Breed presets, the random "dice" config, and validation (saving is src/pets.ts).
  * Everything here is plain data; the 3D proportions per breed live in src/models/dog.ts.
  */
 
@@ -375,57 +375,3 @@ export function sanitizeDogConfig(raw: unknown): DogConfig {
     return defaultDogConfig();
   }
 }
-
-// ---- Store ----------------------------------------------------------------------------
-
-const STORAGE_KEY = "ar-dog-config-v1";
-
-function load(): DogConfig {
-  try {
-    const s = globalThis.localStorage?.getItem(STORAGE_KEY);
-    if (s) return sanitizeDogConfig(JSON.parse(s));
-  } catch {
-    /* private mode / corrupt JSON: fall through */
-  }
-  return defaultDogConfig();
-}
-
-/** False on a first visit (nothing saved yet: the store starts from the default labrador). */
-export function hasSavedDogConfig(): boolean {
-  try {
-    return !!globalThis.localStorage?.getItem(STORAGE_KEY);
-  } catch {
-    return false;
-  }
-}
-
-let current: DogConfig | null = null;
-const listeners = new Set<(c: DogConfig) => void>();
-
-export const dogConfigStore = {
-  get(): DogConfig {
-    if (!current) current = load();
-    return current;
-  },
-  set(c: DogConfig): void {
-    current = sanitizeDogConfig(c);
-    try {
-      globalThis.localStorage?.setItem(STORAGE_KEY, JSON.stringify(current));
-    } catch {
-      /* storage full / blocked */
-    }
-    for (const fn of [...listeners]) {
-      try {
-        fn(current);
-      } catch (e) {
-        console.error(e);
-      }
-    }
-  },
-  subscribe(fn: (c: DogConfig) => void): () => void {
-    listeners.add(fn);
-    return () => {
-      listeners.delete(fn);
-    };
-  },
-};

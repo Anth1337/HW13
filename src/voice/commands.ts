@@ -42,6 +42,7 @@ const SPEC: Array<[DogCommand, string[], ("weak" | "solo" | "")?]> = [
   ["stand", ["stand up", "get up", "on your feet"]],
   ["come", ["come", "come here", "come on", "come to me", "come over", "come back", "to me", "heel", "over here", "c mere"]],
   ["come", ["here"], "weak"],
+  ["come", ["here kitty", "kitty kitty", "here kitty kitty", "puss puss", "pspsps", "psps", "pss pss"]],
   ["follow", ["follow", "follow me", "with me", "walk with me", "walk with us", "come with me", "stay with me", "keep up"]],
   ["free", ["go play", "go explore", "go on", "go away", "go roam", "roam", "run free", "off you go", "run along", "be free", "go wild", "explore", "go run"]],
   ["free", ["free", "play"], "weak"],
@@ -50,6 +51,10 @@ const SPEC: Array<[DogCommand, string[], ("weak" | "solo" | "")?]> = [
   ["jump", ["jump", "jump up", "up up", "hop", "leap", "jump jump", "do a jump", "jump for me", "jump up and down"]],
   ["spin", ["spin", "twirl", "turn around", "spin around", "do a spin", "twirl around", "spin spin", "do a twirl", "spin for me", "chase your tail"]],
   ["spin", ["circle", "turn"], "weak"],
+  // Cat tricks (the play loop drops tricks the deployed species doesn't know).
+  ["pounce", ["pounce", "pounce on it", "get it", "get the hand", "attack", "go get it", "catch it"]],
+  ["stretch", ["stretch", "big stretch", "stretch out", "do a stretch", "have a stretch", "stretch it out"]],
+  ["groom", ["groom", "groom yourself", "wash", "wash up", "wash yourself", "clean up", "clean yourself", "lick your paw"]],
 ];
 
 const ENTRIES: Entry[] = (() => {
@@ -66,7 +71,7 @@ const ENTRIES: Entry[] = (() => {
 
 const FILLER = new Set([
   "please", "now", "okay", "ok", "hey", "hi", "hello", "good", "boy", "girl", "dog", "doggy", "doggie", "puppy", "pup",
-  "buddy", "pal", "can", "could", "would", "will", "just", "and", "then", "right", "alright", "uh", "um", "oh", "yeah",
+  "buddy", "pal", "kitty", "kitten", "cat", "puss", "pussycat", "can", "could", "would", "will", "just", "and", "then", "right", "alright", "uh", "um", "oh", "yeah",
   "ah", "again", "quickly", "go", "lets", "let", "s", "us", "me", "for",
 ]);
 // "go", "me", "for", "to", "up" etc. also appear in phrases: filler is removed only after phrase matching (see below),

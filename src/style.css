@@ -132,11 +132,14 @@ body {
 }
 
 .home.checking .creator,
+.home.checking .menu,
+.home.checking .cr-back,
 .home.checking .home-actions {
   display: none;
 }
 
-.creator {
+.creator,
+.menu {
   scrollbar-width: thin;
   scrollbar-color: #555 transparent;
   flex: 1 1 auto;
@@ -170,8 +173,195 @@ body {
 
 #quicklook img {
   display: block;
-  width: 200px;
+  width: 220px;
   height: 52px;
+}
+
+/* Quick Look is the secondary, still-photo option on iOS: quieter than Deploy. */
+#quicklook {
+  opacity: 0.8;
+}
+
+.home-tip {
+  flex: 1 1 100%;
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--muted, #b5b5b5);
+}
+
+/* ---- "My pets" slot menu ---- */
+.menu {
+  padding: 0 16px 12px;
+}
+
+.menu-h {
+  margin: 4px 0 10px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.slots {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.slot {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-2);
+}
+
+.slot:has(.slot-pick[aria-pressed="true"]) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.slot-empty {
+  border-style: dashed;
+  background: none;
+}
+
+.slot-pick,
+.slot-create,
+.slot-species-btn {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 56px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--fg);
+  font: 600 15px var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+
+.slot-pick:hover,
+.slot-create:hover,
+.slot-species-btn:hover {
+  background: var(--field);
+}
+
+.slot-create {
+  justify-content: center;
+  color: var(--muted);
+}
+
+.slot-emoji {
+  flex: none;
+  font-size: 30px;
+  line-height: 1;
+}
+
+.slot-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.slot-name {
+  font-size: 16px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slot-desc {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.slot-q {
+  margin: 4px 6px 0;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.slot-species {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.slot-species-btn {
+  flex: 1 1 120px;
+  justify-content: center;
+  background: var(--field);
+}
+
+.slot-cancel {
+  align-self: center;
+  margin: -6px 0;
+}
+
+.slot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px 4px;
+}
+
+.slot-actions .slot-q {
+  flex: 1 1 100%;
+  margin: 0 2px 2px;
+  color: var(--fg);
+}
+
+.slot .slot-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 10px 14px;
+  font-size: 15px;
+  background: var(--field);
+}
+
+.slot .slot-btn.btn-primary {
+  background: var(--accent);
+}
+
+.slot .btn-danger {
+  background: #d9483b;
+  color: #fff;
+}
+
+/* Back to the menu, above the creator. */
+.cr-back {
+  appearance: none;
+  flex: none;
+  align-self: flex-start;
+  min-height: 44px;
+  margin: 0 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
+  background: none;
+  color: var(--accent);
+  font: 600 15px var(--font);
+  cursor: pointer;
+}
+
+.cr-back:hover {
+  background: var(--field);
 }
 
 /* ---- Creator controls ---- */

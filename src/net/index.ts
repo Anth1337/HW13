@@ -1,4 +1,5 @@
-import { dogConfigStore, hasSavedDogConfig, randomDogConfig } from "../dog/config";
+import { randomDogConfig } from "../dog/config";
+import { petStore } from "../pets";
 import { localPetCard } from "./kinds";
 import { ROOM_CODE_RE } from "./protocol";
 import { connectRoom, type RoomClient } from "./room";
@@ -68,16 +69,20 @@ export function leaveRoom(): void {
 
 /**
  * Joins ?room=… if the page was opened from an invite, and keeps the room's copy of this pet up to
- * date. A first-time guest gets a random dog so a room isn't full of identical default labradors.
+ * date. A first-time guest (no saved pets) gets a random dog in slot 1 so a room isn't full of
+ * identical default labradors.
  */
 export function initNet(): void {
   const code = roomCodeFromURL();
   if (code) {
-    if (!hasSavedDogConfig()) dogConfigStore.set(randomDogConfig());
+    if (!petStore.slots().some((p) => p)) {
+      petStore.create(0, "dog");
+      petStore.updateActive(randomDogConfig());
+    }
     joinRoom(code);
   }
   let timer: ReturnType<typeof setTimeout> | undefined;
-  dogConfigStore.subscribe(() => {
+  petStore.subscribe(() => {
     clearTimeout(timer);
     timer = setTimeout(() => room?.setPet(localPetCard()), 300); // sliders fire continuously
   });

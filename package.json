@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
     "deploy": "npm run build && wrangler deploy",
-    "fake-friend": "node scripts/fake-friend.mjs"
+    "fake-friend": "node scripts/fake-friend.mjs",
+    "check:pets": "rolldown src/pets.ts -f esm -p node -o node_modules/.cache/pets.mjs && node scripts/check-pets.mjs",
+    "check:tracking": "rolldown src/tracking/index.ts -f esm -p node -o node_modules/.cache/tracking.mjs && node scripts/check-tracking.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.2.3",
