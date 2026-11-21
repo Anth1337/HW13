@@ -2,10 +2,13 @@ import * as THREE from "three";
 import { createDogBrain } from "./dog/brain";
 import { createPetFx } from "./dog/fx";
 import { TRICK_LABEL, type DogBrain, type DogCharacter, type DogCommand, type DogMode, type TrickKind } from "./dog/types";
+import { dogConfigStore } from "./dog/config";
 import { createVisionDetector } from "./vision/detector";
+import { createPeopleTracker } from "./vision/people";
+import { createVoiceListener, parseVoiceCommand, type VoiceListener, type VoiceResult, type VoiceState } from "./voice";
 import { HAND_BONES, createHandOccluder } from "./vision/handOccluder";
 import { liftObservation } from "./vision/lift";
-import type { CameraModel, Observation, Perception, VisionDetector } from "./vision/types";
+import type { CameraModel, Observation, Perception, PerceivedPerson, VisionDetector } from "./vision/types";
 
 /*
  * Everything the two "play with the dog" modes share (WebXR AR in webxr.ts and the camera
@@ -30,6 +33,12 @@ export type PlayUI = {
   trickJump: HTMLButtonElement;
   trickSpin: HTMLButtonElement;
   visionToggle: HTMLButtonElement;
+  /** 🎤 button (#btn-voice): hidden when the browser has no speech recognition. */
+  voiceToggle: HTMLButtonElement;
+  /** #voice-chip: the last heard phrase and the command it was recognised as. */
+  voiceChip: HTMLElement;
+  /** #voice-hint: one-line "Say: …" hint, shown briefly the first time. */
+  voiceHint: HTMLElement;
 };
 
 /** Maps camera-image uv (v down, 0..1) to overlay CSS pixels of a width × height box. */
@@ -47,7 +56,7 @@ export const MODE_LABEL: Record<DogMode, string> = { follow: "Follow", free: "Fr
 let detectorPromise: Promise<VisionDetector> | null = null;
 function loadDetector(): Promise<VisionDetector> {
   if (!detectorPromise) {
-    detectorPromise = createVisionDetector({ maxHands: 2, maxFaces: 2 });
+    detectorPromise = createVisionDetector({ maxHands: 4, maxFaces: 4, maxBodies: 3 });
     detectorPromise.catch(() => (detectorPromise = null)); // a later session may retry
   }
   return detectorPromise;
@@ -60,9 +69,85 @@ const HAND_RECENT_MS = 2000;
 /** Perception older than this is dropped (the brain ignores hands > 0.4 s, faces > 0.5–2 s). */
 const HAND_DROP_AGE = 1;
 const FACE_DROP_AGE = 2.5;
+const BODY_DROP_AGE = 2.5;
 const DRAW_AGE = 0.5; // s: keep drawing landmarks this long after the last detection
 /** A mode note (e.g. "no camera image") shows alone this long, then the dog's status takes over. */
 const NOTE_SOLO_S = 8;
+
+// ---- Voice ----
+const VOICE_PREF_KEY = "ar-dog-voice";
+const VOICE_HINT_KEY = "ar-dog-voice-hint-seen";
+const VOICE_HINT_TEXT = "Say: sit · lie down · come · roll over · jump · spin";
+const VOICE_HINT_S = 7;
+const IS_APPLE_TOUCH =
+  typeof navigator !== "undefined" &&
+  (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.userAgent.includes("Macintosh") && navigator.maxTouchPoints > 1));
+const VOICE_CHIP_S = 2;
+/** Same command inside one utterance (interim updates, then the final) fires once; also not again within this. */
+const VOICE_REPEAT_MS = 1500;
+const VOICE_HEAR_EVERY_MS = 1000;
+/** Speech recognisers answer late; look back this far for the person whose mouth was moving. */
+const SPEAKER_WINDOW_S = 1.5;
+/** An interim match that could still grow into another command ("stay" -> "stay with me") waits this long for more words. */
+const VOICE_EXTEND_WAIT_MS = 450;
+
+/**
+ * One speech listener shared by primeVoice() (the Deploy tap, before the AR / camera session
+ * exists) and the dog play session that follows: Chrome in an AR session may refuse the first mic
+ * request, and a tap is the only thing that may start it.
+ */
+let sharedVoice: VoiceListener | null = null;
+function acquireVoice(): VoiceListener | null {
+  if (!sharedVoice) {
+    try {
+      sharedVoice = createVoiceListener();
+    } catch (err) {
+      console.warn("[dog] voice unavailable", err);
+    }
+  }
+  return sharedVoice;
+}
+function releaseVoice() {
+  try {
+    sharedVoice?.stop(); // releases the mic (the browser's recording indicator turns off)
+    sharedVoice?.dispose();
+  } catch {
+    /* nothing useful to do */
+  }
+  sharedVoice = null;
+}
+/** Call synchronously from the tap that starts AR / camera mode: restarts voice commands if the user left them on. */
+export function primeVoice() {
+  if (storageGet(VOICE_PREF_KEY) !== "1") return;
+  const v = acquireVoice();
+  if (v?.supported) v.start();
+}
+/** Counterpart of primeVoice() when the session could not start (releases the mic). */
+export function releasePrimedVoice() {
+  releaseVoice();
+}
+
+function storageGet(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+function storageSet(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* private mode / blocked storage: the choice just isn't remembered */
+  }
+}
+
+const PERSON_COLORS = ["#4dd2ff", "#ff9f1c", "#7cd992", "#c58bff", "#ff6b6b", "#ffe066"];
+const personColor = (id: number | null | undefined) => (id == null ? "#bbbbbb" : PERSON_COLORS[Math.abs(id) % PERSON_COLORS.length]);
+/** MediaPipe pose skeleton (upper body + legs); landmark index pairs. */
+const POSE_BONES: [number, number][] = [
+  [11, 12], [11, 13], [13, 15], [12, 14], [14, 16], [11, 23], [12, 24], [23, 24], [23, 25], [25, 27], [24, 26], [26, 28], [0, 11], [0, 12],
+];
 
 export interface DogPlay {
   /** Give the placed dog a brain (anchor = the Group holding dog.root, owned by the brain from now on). */
@@ -96,8 +181,10 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
   let brain: DogBrain | null = null;
   let unsubPet: (() => void) | null = null;
   let dogClock = 0;
-  let perception: Perception = { hands: [], faces: [] };
-  let observation: Observation = { hands: [], faces: [] };
+  const people = createPeopleTracker();
+  let perception: Perception = { hands: [], faces: [], bodies: [], people: [] };
+  let observation: Observation = { hands: [], faces: [], bodies: [] };
+  let lastCamHadDepth = false;
   let observationAge = Infinity;
   let lastDetectMs = -Infinity;
   let lastHandSeenMs = -Infinity;
@@ -112,6 +199,19 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
   let lastPosture = "";
   let lastMode = "";
   let lastEnabled: boolean | null = null;
+
+  // Voice state.
+  let voice: VoiceListener | null = null;
+  let voiceState: VoiceState = "off";
+  let voiceWanted = storageGet(VOICE_PREF_KEY) === "1"; // remembered choice; only armed until a tap
+  let voiceChipLeft = 0;
+  let voiceHintLeft = 0;
+  let lastHearMs = -Infinity;
+  /** The command fired from the utterance in progress (null once its final result arrived). */
+  let firedCmd: DogCommand | null = null;
+  let firedMs = -Infinity;
+  let utteranceOpen = false;
+  let extendTimer: ReturnType<typeof setTimeout> | null = null;
 
   const commandButtons: { button: HTMLButtonElement; cmd: () => DogCommand }[] = [
     { button: ui.cmdSit, cmd: () => (brain?.posture === "sit" ? "stand" : "sit") },
@@ -165,6 +265,153 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     }
   }
 
+  function showChip(text: string, seconds = VOICE_CHIP_S) {
+    ui.voiceChip.textContent = text;
+    ui.voiceChip.hidden = text === "";
+    voiceChipLeft = text === "" ? 0 : seconds;
+  }
+
+  function syncVoiceUI() {
+    const on = voiceState === "starting" || voiceState === "listening";
+    ui.voiceToggle.hidden = !voice || !voice.supported;
+    ui.voiceToggle.setAttribute("aria-pressed", String(on));
+    ui.voiceToggle.dataset.state = voiceState === "off" && voiceWanted ? "armed" : voiceState;
+    ui.voiceToggle.title =
+      voiceState === "denied"
+        ? IS_APPLE_TOUCH
+          ? "Voice blocked — turn on Dictation in iOS Settings → General → Keyboard and allow the microphone"
+          : "Microphone blocked — allow it in the browser's site settings"
+        : on
+          ? "Listening for commands — tap to turn off"
+          : voiceWanted
+            ? "Tap to turn voice commands back on"
+            : "Voice commands";
+  }
+
+  function startVoice() {
+    if (!voice || !voice.supported || disposed) return;
+    voiceWanted = true;
+    storageSet(VOICE_PREF_KEY, "1");
+    voice.start(); // synchronously inside the tap: browsers need the gesture for the mic prompt
+    if (storageGet(VOICE_HINT_KEY) !== "1") {
+      storageSet(VOICE_HINT_KEY, "1");
+      ui.voiceHint.textContent = VOICE_HINT_TEXT;
+      ui.voiceHint.hidden = false;
+      voiceHintLeft = VOICE_HINT_S;
+    }
+    syncVoiceUI();
+  }
+
+  function stopVoice() {
+    voiceWanted = false;
+    storageSet(VOICE_PREF_KEY, "0");
+    voice?.stop();
+    utteranceOpen = false;
+    firedCmd = null;
+    clearExtendTimer();
+    syncVoiceUI();
+  }
+
+  /** The dog's name for addressing it by voice; "" when it has none (a placeholder would count as the name). */
+  function dogName(): string {
+    return dogConfigStore.get().name.trim();
+  }
+
+  function clearExtendTimer() {
+    if (extendTimer !== null) {
+      clearTimeout(extendTimer);
+      extendTimer = null;
+    }
+  }
+
+  function fireIntent(command: DogCommand, phrase: string, speaker: number | null, nowMs: number) {
+    if (!brain) return;
+    brain.command(command, speaker);
+    firedCmd = command;
+    firedMs = nowMs;
+    utteranceOpen = true;
+    navigator.vibrate?.(12);
+    syncButtons();
+    showChip(`“${phrase}”  →  ${command === "rollOver" ? "roll over" : command}`);
+  }
+
+  function onVoiceResult(r: VoiceResult) {
+    if (!brain || disposed) return;
+    const nowMs = performance.now();
+    const speaker = people.speakerWithin(SPEAKER_WINDOW_S);
+    const text = r.transcript.trim();
+    if (!text) return;
+
+    // Any speech: the dog perks up and looks at whoever is talking (rate limited).
+    if (nowMs - lastHearMs >= VOICE_HEAR_EVERY_MS) {
+      lastHearMs = nowMs;
+      brain.hearVoice(speaker);
+    }
+
+    const name = dogName();
+    let intent = parseVoiceCommand(text, name);
+    if (!intent && r.alternatives) {
+      for (const alt of r.alternatives) {
+        intent = parseVoiceCommand(alt, name);
+        if (intent) break;
+      }
+    }
+
+    clearExtendTimer(); // newer words supersede a waiting interim match
+    if (intent) {
+      // Interim results fire as soon as they match; the same command again from the same utterance
+      // (more interim updates, then the final) or within VOICE_REPEAT_MS is ignored. An interim
+      // that could still become another command ("play" -> "play dead") waits for more words.
+      const run = (at: number) => {
+        const duplicate = firedCmd === intent.command && (utteranceOpen || at - firedMs < VOICE_REPEAT_MS);
+        if (!duplicate) fireIntent(intent.command, intent.phrase, speaker, at);
+      };
+      if (intent.mayExtend && !r.final) {
+        showChip(`“${text}”`);
+        extendTimer = setTimeout(() => {
+          extendTimer = null;
+          if (!brain || disposed) return;
+          run(performance.now());
+        }, VOICE_EXTEND_WAIT_MS);
+      } else {
+        run(nowMs);
+      }
+    } else {
+      showChip(`“${text}”`);
+    }
+    if (r.final) utteranceOpen = false; // the next utterance may repeat the command (after VOICE_REPEAT_MS)
+  }
+
+  function onVoiceState(s: VoiceState) {
+    voiceState = s;
+    if (s === "denied") {
+      voiceWanted = false;
+      storageSet(VOICE_PREF_KEY, "0");
+      // iOS Safari reports both a refused mic and disabled Dictation/Siri ("service-not-allowed") as a
+      // first-time refusal, so the message names both fixes. Longer than a normal chip: it needs reading.
+      showChip(
+        IS_APPLE_TOUCH
+          ? "Voice needs Dictation: Settings → General → Keyboard → Enable Dictation (and allow the microphone for Safari)"
+          : "Microphone blocked — allow it in site settings",
+        7,
+      );
+    } else if (s === "off" && voiceWanted && voice && !(typeof document !== "undefined" && document.hidden)) {
+      // Recogniser gave up (e.g. repeated network errors): say so rather than silently doing nothing.
+      showChip("Voice stopped — tap 🎤 to retry");
+    }
+    syncVoiceUI();
+  }
+
+  function personLabelPoint(person: PerceivedPerson, w: number, h: number): { x: number; y: number } | null {
+    const face = perception.faces.find((f) => f.id === person.faceId);
+    if (face) return uvToScreen(face.uv.u, face.box.v0, w, h);
+    const body = perception.bodies.find((b) => b.id === person.bodyId);
+    const bp = body?.noseUV ?? body?.torsoUV;
+    if (bp) return uvToScreen(bp.u, bp.v, w, h);
+    const hand = perception.hands.find((x) => person.handIds.includes(x.id));
+    return hand ? uvToScreen(hand.uv.u, hand.uv.v, w, h) : null;
+  }
+
   function drawVision() {
     if (!ctx) return;
     const canvas = ui.visionCanvas;
@@ -179,13 +426,38 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     ctx.clearRect(0, 0, w, h);
 
     ctx.font = "600 13px system-ui, sans-serif";
-    if (detectorState !== "ready") {
-      ctx.fillStyle = "rgba(0,0,0,0.55)";
-      ctx.fillRect(8, h - 150, 200, 22);
-      ctx.fillStyle = "#fff";
-      ctx.fillText(`vision: ${detectorState}`, 14, h - 134);
-    }
+    const hud = `vision: ${detectorState} · depth ${lastCamHadDepth ? "✓" : "✗"} · mask ${lastCamHadDepth ? "hull+depth" : "hull"} · people ${perception.people.length} · mic ${voiceState}`;
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillRect(8, h - 176, ctx.measureText(hud).width + 12, 22);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(hud, 14, h - 160);
     if (observationAge > DRAW_AGE) return;
+
+    // Bodies: skeleton + wrists, coloured by person.
+    for (const body of observation.bodies) {
+      const pb = perception.bodies.find((b) => b.id === body.id);
+      const color = personColor(pb?.personId);
+      const vis = (i: number) => (body.visibility[i] ?? 0) >= 0.5 && !!body.landmarks[i];
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = color;
+      ctx.beginPath();
+      for (const [a, b] of POSE_BONES) {
+        if (!vis(a) || !vis(b)) continue;
+        const pa = uvToScreen(body.landmarks[a].u, body.landmarks[a].v, w, h);
+        const pc = uvToScreen(body.landmarks[b].u, body.landmarks[b].v, w, h);
+        ctx.moveTo(pa.x, pa.y);
+        ctx.lineTo(pc.x, pc.y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = color;
+      for (const i of [15, 16]) {
+        if (!vis(i)) continue;
+        const p = uvToScreen(body.landmarks[i].u, body.landmarks[i].v, w, h);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
 
     // Hands: skeleton + palm label (distance, near-camera).
     for (const hand of observation.hands) {
@@ -193,7 +465,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       const lifted = perception.hands.find((p) => p.id === hand.id);
       const near = lifted?.nearCamera ?? false;
       ctx.lineWidth = 3;
-      ctx.strokeStyle = near ? "#ff9f1c" : "#ffd23f";
+      ctx.strokeStyle = personColor(lifted?.personId);
       ctx.beginPath();
       for (const [a, b] of HAND_BONES) {
         if (!pts[a] || !pts[b]) continue;
@@ -209,7 +481,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       }
       const wrist = pts[0];
       if (wrist) {
-        const label = `✋${hand.id}${lifted ? ` ${lifted.distance.toFixed(2)} m` : ""}${near ? " near" : ""}`;
+        const label = `✋${hand.id}${lifted?.personId != null ? ` P${lifted.personId}` : ""}${lifted ? ` ${lifted.distance.toFixed(2)} m` : ""}${near ? " near" : ""}`;
         ctx.fillStyle = "rgba(0,0,0,0.6)";
         ctx.fillRect(wrist.x + 8, wrist.y + 4, ctx.measureText(label).width + 8, 18);
         ctx.fillStyle = "#ffffff";
@@ -221,7 +493,8 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     const contactId = brain?.eyeContactWith ?? null;
     for (const face of observation.faces) {
       const contact = face.id === contactId;
-      const color = contact ? "#ff4d8d" : "#4dd2ff";
+      const pf = perception.faces.find((f) => f.id === face.id);
+      const color = contact ? "#ff4d8d" : personColor(pf?.personId);
       ctx.fillStyle = color;
       for (const c of [face.leftEyeOuter, face.rightEyeOuter]) {
         const p = uvToScreen(c.u, c.v, w, h);
@@ -243,11 +516,33 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       ctx.fillStyle = "#ffffff";
       ctx.fillText(`#${face.id}${contact ? " eye contact" : ""}`, e.x + 10, e.y - 10);
     }
+
+    // People: id badge (speaking indicator, viewer, who the dog is attending to).
+    const attending = brain?.attentionPerson ?? null;
+    for (const person of perception.people) {
+      const pt = personLabelPoint(person, w, h);
+      if (!pt) continue;
+      const speaking = person.speaking >= 0.3;
+      const label = `P${person.id}${person.isViewer ? " you" : ""}${speaking ? " 🗣" : ""}${person.id === attending ? " ◀dog" : ""}`;
+      const tw = ctx.measureText(label).width + 10;
+      ctx.fillStyle = personColor(person.id);
+      ctx.fillRect(pt.x - tw / 2, pt.y - 44, tw, 20);
+      ctx.fillStyle = "#000";
+      ctx.fillText(label, pt.x - tw / 2 + 5, pt.y - 29);
+      if (speaking) {
+        ctx.strokeStyle = personColor(person.id);
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 18 + 10 * person.speaking, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
   }
 
   // ---- Setup (everything above is initialised) ----
   for (const entry of commandButtons) {
     const onClick = () => {
+      if (voiceWanted && voiceState === "off") startVoice(); // remembered choice resumes on the first tap
       if (!brain) return;
       brain.command(entry.cmd());
       navigator.vibrate?.(12);
@@ -266,6 +561,31 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
   setVision(false);
   syncButtons();
   setStatus("");
+
+  // Voice: only a tap starts the mic, so the listener is idle unless primeVoice() already started it from the Deploy tap.
+  voice = acquireVoice();
+  if (voice) {
+    cleanups.push(voice.onResult(onVoiceResult), voice.onState(onVoiceState));
+    if (voice.state !== "off") {
+      voiceWanted = voice.state === "starting" || voice.state === "listening" || voiceWanted;
+      onVoiceState(voice.state);
+    }
+  }
+  ui.voiceChip.hidden = true;
+  ui.voiceHint.hidden = true;
+  const onVoiceToggle = () => {
+    if (voiceState === "starting" || voiceState === "listening") stopVoice();
+    else startVoice();
+  };
+  ui.voiceToggle.addEventListener("click", onVoiceToggle);
+  cleanups.push(() => ui.voiceToggle.removeEventListener("click", onVoiceToggle));
+  syncVoiceUI();
+  if (voice?.supported && voiceWanted && voiceState === "off") {
+    // Remembered "on": a browser only lets a tap start the mic, so wait for the first button press.
+    ui.voiceHint.textContent = "Tap 🎤 to turn voice commands back on";
+    ui.voiceHint.hidden = false;
+    voiceHintLeft = VOICE_HINT_S;
+  }
 
   return {
     attach(newDog, anchor, floorY) {
@@ -325,12 +645,16 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       try {
         observation = detector.detect(image, timeMs);
         observationAge = 0;
+        // Only hands pick the fast cadence (the mask is the only thing that profits from it).
+        if (observation.hands.length > 0) lastHandSeenMs = timeMs;
         perception = liftObservation(observation, cam, perception, dtSincePrev);
+        perception = people.update(perception, 0); // fresh items: attribute, no time passes
+        lastCamHadDepth = !!cam.depthAt; // depthMap itself is a lazy conversion: not touched here
+        occluder.setCamera?.(cam);
       } catch (err) {
         console.warn("[dog] detection failed", err);
         return;
       }
-      if (observation.hands.length > 0) lastHandSeenMs = timeMs;
     },
     update(dt, viewer) {
       if (disposed) return;
@@ -339,12 +663,21 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       noteAge += dt;
       for (const h of perception.hands) h.age += dt;
       for (const f of perception.faces) f.age += dt;
-      if (perception.hands.some((h) => h.age > HAND_DROP_AGE) || perception.faces.some((f) => f.age > FACE_DROP_AGE)) {
-        perception = {
-          hands: perception.hands.filter((h) => h.age <= HAND_DROP_AGE),
-          faces: perception.faces.filter((f) => f.age <= FACE_DROP_AGE),
-        };
+      for (const b of perception.bodies) b.age += dt;
+      if (
+        perception.hands.some((h) => h.age > HAND_DROP_AGE) ||
+        perception.faces.some((f) => f.age > FACE_DROP_AGE) ||
+        perception.bodies.some((b) => b.age > BODY_DROP_AGE)
+      ) {
+        perception.hands = perception.hands.filter((h) => h.age <= HAND_DROP_AGE);
+        perception.faces = perception.faces.filter((f) => f.age <= FACE_DROP_AGE);
+        perception.bodies = perception.bodies.filter((b) => b.age <= BODY_DROP_AGE);
       }
+      perception = people.update(perception, dt); // stale items: persons age / expire, speech window moves on
+
+      // Voice chip / hint timers.
+      if (voiceChipLeft > 0 && (voiceChipLeft -= dt) <= 0) showChip("");
+      if (voiceHintLeft > 0 && (voiceHintLeft -= dt) <= 0) ui.voiceHint.hidden = true;
 
       if (brain && dog) {
         dogClock += dt;
@@ -367,6 +700,13 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       unsubPet?.();
       unsubPet = null;
       for (const off of cleanups) off();
+      clearExtendTimer();
+      releaseVoice();
+      voice = null;
+      ui.voiceChip.hidden = true;
+      ui.voiceHint.hidden = true;
+      people.reset();
+      occluder.setCamera?.(null);
       setVision(false);
       setStatus("");
       for (const { button } of commandButtons) button.disabled = false;

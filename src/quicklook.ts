@@ -25,7 +25,7 @@ export function createQuickLook(link: HTMLAnchorElement, img: HTMLImageElement) 
   let latest = 0;
   /** The blob URL the link points at (and its config key), so it can be revoked when replaced. */
   let current: { key: string; url: string } | null = null;
-  img.src = badge("View in AR");
+  img.src = badge("Quick Look (still model)");
 
   async function runExport(config: DogConfig): Promise<string> {
     const dog = createDogCharacter(config);
@@ -78,14 +78,14 @@ export function createQuickLook(link: HTMLAnchorElement, img: HTMLImageElement) 
 
 /** Quick Look links must contain only an <img>, so the button is an SVG image. */
 function badge(text: string): string {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="200" height="52" viewBox="0 0 200 52">
-  <rect x="1" y="1" width="198" height="50" rx="25" fill="#3a3a3a" stroke="#ffa033" stroke-width="2"/>
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="220" height="52" viewBox="0 0 220 52">
+  <rect x="1" y="1" width="218" height="50" rx="25" fill="#3a3a3a" stroke="#ffa033" stroke-width="2"/>
   <g transform="translate(40 26)" fill="none" stroke="#ffa033" stroke-width="2.2" stroke-linejoin="round">
     <path d="M0 -11 L10 -5.5 L10 5.5 L0 11 L-10 5.5 L-10 -5.5 Z"/>
     <path d="M-10 -5.5 L0 0 L10 -5.5 M0 0 L0 11"/>
   </g>
-  <text x="118" y="32" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif"
-    font-size="17" font-weight="600" fill="#f2f2f2">${text}</text>
+  <text x="130" y="32" text-anchor="middle" font-family="-apple-system, system-ui, sans-serif"
+    font-size="14" font-weight="600" fill="#f2f2f2">${text}</text>
 </svg>`;
   return "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg);
 }

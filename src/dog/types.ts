@@ -225,7 +225,20 @@ export interface DogBrain {
    * @param viewer the phone camera: world position and world forward (unit) vector
    */
   update(dt: number, perception: Perception, viewer: { position: THREE.Vector3; forward: THREE.Vector3 }): void;
-  command(cmd: DogCommand): void;
+  /**
+   * Run a command. `by` = who gave it: a PerceivedPerson.id (from a spoken command attributed to a
+   * speaker) or null/omitted (the phone holder / a button). "come" walks to THAT person (their
+   * floor position) instead of the phone, then follows them while mode is follow; the dog also
+   * turns its attention (head / eye contact) to them for a few seconds.
+   */
+  command(cmd: DogCommand, by?: number | null): void;
+  /**
+   * Someone spoke (any words, recognised as a command or not): the dog perks up and looks at the
+   * speaker `personId` (null = unknown speaker → the phone holder) for ~2 s. Does not change mode.
+   */
+  hearVoice(personId: number | null): void;
+  /** Id of the person the dog is currently paying attention to (eye contact / petting / sniffing their hand / following), or null. */
+  readonly attentionPerson: number | null;
   /** Walk to a point on the floor (y ignored), then wait there in stay mode, standing. */
   goTo(worldPoint: THREE.Vector3): void;
   /** Teleport (placement / re-placement) — sets position + faces the given world point. */
@@ -236,7 +249,7 @@ export interface DogBrain {
   /** Short status for the UI ("Following you", "Sniffing your hand", "Loves the head pats",
    *  "Sitting", "Rolling over!", "Exploring", "Making eye contact", ...). */
   readonly status: string;
-  /** Id of the face the dog is making eye contact with, or null. Only ever one. */
+  /** Id of the FACE the dog is making eye contact with, or null. Only ever one. */
   readonly eyeContactWith: number | null;
   /** Fires when a petting session starts (hearts / haptics). Returns an unsubscribe. */
   onPetStart(fn: (zone: "head" | "body", worldPoint: THREE.Vector3) => void): () => void;
