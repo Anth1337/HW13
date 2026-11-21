@@ -1,18 +1,41 @@
 /*
  * WebXR camera image + depth → (ImageData, CameraModel) snapshots for the vision pipeline.
  *
- * Session features webxr.ts must request (all optional, so AR still starts without them):
+ * SESSION INIT webxr.ts MUST USE (all optional, so AR still starts without them):
  *   optionalFeatures: ["camera-access", "depth-sensing", "dom-overlay"]
- *   depthSensing: { usagePreference: ["cpu-optimized"], dataFormatPreference: ["luminance-alpha", "float32"] }
- * ("depthSensing" is required in the init dict whenever "depth-sensing" is requested, or
- * Chrome rejects the session request.) "camera-access" is Chrome-on-Android only (Raw Camera
- * Access); without it grab() always returns null and `available` stays false.
+ *   depthSensing: DEPTH_SENSING_INIT  (exported below)
+ *     = { usagePreference: ["cpu-optimized"], dataFormatPreference: ["luminance-alpha", "float32"] }
+ * ("depthSensing" is required in the init dict whenever "depth-sensing" is requested, or Chrome
+ * rejects the session request. Valid enum values per spec / @types/webxr: usage "cpu-optimized" |
+ * "gpu-optimized"; format "luminance-alpha" | "float32" | "unsigned-short". Do NOT list
+ * "unsigned-short": it is a newer enum value and older Chrome builds throw a TypeError on unknown
+ * enum values in the sequence, which fails the whole requestSession.)
+ * "camera-access" is Chrome-on-Android only (Raw Camera Access); without it grab() always
+ * returns null and `available` stays false.
  *
- * three.js r187 interplay (WebXRManager.js):
- * - Depth: three only consumes depth when session.depthUsage === "gpu-optimized" (it then
- *   builds an occlusion mesh and stops drawing scene.background). With cpu-optimized usage it
- *   never touches depth, so there is no conflict. Do NOT list "gpu-optimized" in
- *   usagePreference.
+ * WHY NOT "gpu-optimized" (checked against three r187 source):
+ * - WebXRManager.onAnimationFrame: if enabledFeatures has "depth-sensing" and
+ *   session.depthUsage == "gpu-optimized", it calls glBinding.getDepthInformation(views[0]) and
+ *   WebXRDepthSensing.init() wraps depthData.texture in an ExternalTexture (it also adopts
+ *   depthData.depthNear/depthFar for the camera and renderState).
+ * - WebGLRenderer.render: while presenting, projects xr.getDepthSensingMesh() FIRST (groupOrder
+ *   -Infinity) and skips scene.background. That mesh is a fullscreen quad whose fragment shader
+ *   samples a `sampler2DArray` (layer 0/1 per eye) and writes `.r` straight into gl_FragDepth.
+ *   So occlusion IS automatic (no app code needed) — but only for runtimes that hand out a
+ *   TEXTURE_2D_ARRAY of normalised (projection-space) depth: Meta Quest Browser.
+ * - Chrome on Android (ARCore) returns a plain TEXTURE_2D (textureType "texture") holding raw
+ *   uint16 millimetres ("luminance-alpha") or float meters. three binds it to TEXTURE_2D_ARRAY
+ *   (WebGLTextures.setTexture2DArray) → GL_INVALID_OPERATION, the sampler reads 0 →
+ *   gl_FragDepth = 0 (near plane) over the whole screen → the dog would be hidden ENTIRELY.
+ *   Even with a matching target, the values are not normalised depth. And with gpu usage there
+ *   is no CPU buffer, so lift.ts loses measured hand depth.
+ * Therefore: request cpu-optimized only (this module snapshots it for cam.depthAt, which lift.ts
+ * uses for hand/face depth) and occlude with createHandOccluder (vision/handOccluder.ts) —
+ * always enabled on phones. If gpu-optimized is ever re-enabled (e.g. for Quest), gate the
+ * hand occluder off with gpuDepthOcclusionActive(renderer) below, and only when the depth
+ * texture is a texture-array.
+ *
+ * three.js r187 interplay otherwise (WebXRManager.js):
  * - Camera access: when "camera-access" is enabled three calls binding.getCameraImage() itself
  *   every frame (exposed via renderer.xr.getCameraTexture). We use the same binding
  *   (renderer.xr.getBinding()); getCameraImage returns the same texture within one frame.
@@ -28,9 +51,28 @@
  * Call grab() inside the XR animation loop (renderer.setAnimationLoop callback), ideally before
  * renderer.render(). It restores raw GL state, calls renderer.resetState() and re-binds three's
  * current (XR) render target so the following render() still draws into the XR framebuffer.
+ * Default cadence: one image per 66 ms (~15 Hz), longest side 384 px.
  */
 import * as THREE from "three";
 import type { CameraModel, XRVisionSource } from "./types";
+
+/** Depth-sensing init for requestSession (see header: cpu-optimized only). */
+export const DEPTH_SENSING_INIT: XRDepthStateInit = {
+  usagePreference: ["cpu-optimized"],
+  dataFormatPreference: ["luminance-alpha", "float32"],
+};
+
+/**
+ * True when three.js is doing GPU depth occlusion itself (only possible if the session got
+ * gpu-optimized depth — never with DEPTH_SENSING_INIT). Use to disable the hand occluder.
+ */
+export function gpuDepthOcclusionActive(renderer: THREE.WebGLRenderer): boolean {
+  try {
+    return renderer.xr.isPresenting && renderer.xr.hasDepthSensing();
+  } catch {
+    return false;
+  }
+}
 
 // ---- Minimal typings for Raw Camera Access (missing from @types/webxr) ----
 interface XRCameraLike {
@@ -264,7 +306,7 @@ export function createXRVisionSource(
   session: XRSession,
   opts: { intervalMs?: number; maxSize?: number } = {},
 ): XRVisionSource {
-  const intervalMs = opts.intervalMs ?? 100;
+  const intervalMs = opts.intervalMs ?? 66;
   const maxSize = opts.maxSize ?? 384;
   const gl = renderer.getContext() as WebGL2RenderingContext;
   const isGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;

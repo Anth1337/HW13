@@ -1,37 +1,50 @@
 # AR Dog (web app)
 
-A web page that puts a 3D **dog** (and, if you like, a **woman** and a **man**) into your real surroundings through the phone camera, and lets real people play with it. Everything is built from basic shapes with flat colours (no textures). Nothing to install from an app store and no Mac needed.
+Design your own dog, then deploy it into your real surroundings through the phone camera and play with it: pet it with your hand, make it sit, lie down and come, teach it tricks, and let it follow you around. Everything is built from basic shapes with flat colours (no textures). Nothing to install from an app store and no Mac needed.
 
-Pick a character with the **Dog | Woman | Man** switch on the start screen (the dog is the default). In Android AR the same switch sits above the Undo / Clear / Exit buttons, so you can change which character the next tap places.
+## 1. Make your dog (character creator)
 
-## Playing with the dog
+The start screen shows your dog in a 3D preview (drag to orbit, pinch / scroll to zoom) above a creator panel (a bottom sheet on phones, a side panel on wide screens and phones held sideways). Every change shows up on the dog straight away and is saved in the browser for next time.
 
-The phone's camera image goes through on-device computer vision that finds the **people in the frame** (their eyes, where they're looking, and their hands). Each placed dog then:
+- **Name**: shown on the deploy button ("Deploy Biscuit").
+- **🎲 Randomize**: a random breed with plausible colours and proportions, and a random name.
+- **Breed**: Labrador, Corgi, Dachshund, Husky, Poodle, Beagle, German Shepherd, Dalmatian, Pug or Mixed breed. Picking a breed loads its typical look (keeping the name and sex); **Reset breed** undoes your tweaks.
+- **Body**: sex (male dogs are a bit larger and broader-headed), size (shown as the real shoulder height), build (slim → stocky), leg length.
+- **Coat**: colour swatches typical of the breed, or any main / markings colour; pattern (solid, two-tone, saddle, spots, mask, patches); fluff (sleek → fluffy).
+- **Face**: snout length, ear style (floppy, pointy, folded, long), eye size, eye and nose colour, brow spots, tongue out.
+- **Tail** style and **collar** colour, with or without a name tag.
 
-- **Gets petted.** Reach out and put your hand on the dog's **head** (it half-closes its eyes and leans into your hand) or its **back** (it wiggles and wags like mad). Little hearts float up and the phone buzzes when a petting starts.
-- **Makes eye contact** with someone who is looking at it: it turns its head (and, if needed, its whole body) to look back. **Only one person at a time**: it sticks with that person until they look away, then switches to the next one who's looking.
-- **Does tricks**: the phone user taps **Roll over**, **Jump** or **Spin** (every placed dog does it).
-
-A status line under the hint says what the dog sees (e.g. "👀 2 people · Making eye contact"). The **👁** button draws what the vision sees on top of the camera (eyes, gaze direction, hands; the person the dog is looking at is pink).
+## 2. Deploy it
 
 | Phone | What you get |
 |---|---|
-| **Android** (Chrome) | Full AR in the browser (WebXR): scan the room, a ring shows the surface, tap to place the selected character there at real size, turned to face you (with shadows). Place as many as you like and mix them; they all animate. Dogs see people, get petted, make eye contact and do tricks. Undo / Clear / Exit buttons. |
-| **iPhone / iPad** (Safari) | iOS Safari doesn't support WebXR. **Play with the dog (camera)** shows the dog over the live camera with the same petting, eye contact and tricks, but without room tracking: hold the phone still and the dog stays on the screen (drag to move it). **View in AR** opens Apple's built-in **AR Quick Look** viewer instead: a still model on your floor (drag to move, pinch to scale, twist to rotate; no animation or interaction). |
-| **Computer** | An animated 3D preview you can orbit, plus **Play with the dog (camera)** with a webcam. |
+| **Android** (Chrome) | Full AR in the browser (WebXR). **Deploy** starts the camera: scan the floor, a ring shows the surface, tap to place your dog there at real size (with a shadow). |
+| **iPhone / iPad** (Safari) | iOS Safari has no WebXR, so **Deploy** shows the dog over the live camera (camera mode) with the same petting, commands and tricks, but without room tracking: hold the phone still. **View in AR** opens Apple's **AR Quick Look** with your custom dog as a still model on your floor (no animation or interaction). |
+| **Computer** | The creator and preview; **Deploy** opens camera mode with a webcam. |
+
+## 3. Play
+
+- **Your hand comes first.** Hold your hand out in front of the camera: the dog looks at it and trots over to sniff it, and follows it with its head (and body) as you move it slowly. Put your hand on its **head** (it closes its eyes and leans in) or its **back** (it wiggles and wags like mad) to **pet** it: hearts float up and the phone buzzes. Only your hand is needed, not your whole body.
+- **Hand in front of the dog**: when your hand is close to the camera the dog is hidden behind it, so your hand really looks in front of the dog.
+- **Moves on its own**: in **Follow** mode it stays near you and trots after you when you walk away; in **Free roam** it wanders and sniffs around nearby. The mode button switches between them.
+- **Tap the floor** to send it somewhere; it waits there.
+- **Sit**, **Lie down**: it stays put until you give another command. **Come**: it walks to you and follows you again.
+- **Tricks**: **Roll over**, **Jump**, **Spin**.
+- **Eye contact**: someone looking at the dog gets looked back at (one person at a time).
+- **👁** draws what the computer vision sees (hands, faces) on top of the camera. **✕** goes back to the creator.
 
 ### How the computer vision works
 
-- [MediaPipe](https://ai.google.dev/edge/mediapipe/solutions/guide) **pose landmarker** (bodies, shoulders, hands) and **face landmarker** (eye corners, head pose and eye-look blendshapes, giving a gaze direction) run **on the device**, in the browser (WebAssembly + GPU). **No camera image is uploaded anywhere.**
-- The model files (about 10 MB) are downloaded on first use from Google's model storage (`storage.googleapis.com`) and the jsDelivr CDN, then cached by the browser. In WebXR they only load once the browser actually shares the camera image.
-- In WebXR the camera image comes from **WebXR Raw Camera Access**, about 10 frames a second, downscaled. Each person is placed in 3D using the AR camera pose for that frame: the distance comes from **depth sensing** when the phone has it, otherwise from the apparent size of their eyes or shoulders. A hand that reaches towards the dog is placed at the dog, so a hand on the dog counts as petting.
-- In camera mode there's no AR tracking, so the 3D camera is fixed: the phone is assumed to be held still about 1.3 m above the floor, tilted down about 20°, with a typical ~65° lens.
+- [MediaPipe](https://ai.google.dev/edge/mediapipe/solutions/guide) **hand landmarker** (your hand) and **face landmarker** (eyes and gaze, for eye contact) run **on the device**, in the browser (WebAssembly + GPU). **No camera image is uploaded anywhere.**
+- The model files are downloaded on first use from Google's model storage (`storage.googleapis.com`) and the jsDelivr CDN, then cached by the browser.
+- In WebXR the camera image comes from **WebXR Raw Camera Access** (about 10 frames a second). Hands are placed in 3D using the AR camera pose for that frame and **depth sensing** when the phone has it, otherwise the hand's apparent size.
+- In camera mode there's no AR tracking, so the 3D camera is fixed: the phone is assumed to be held still about 1.3 m above the floor, tilted down a little, with a typical ~65° lens.
 
 Built with [Vite](https://vite.dev) + [three.js](https://threejs.org) + TypeScript + [MediaPipe Tasks Vision](https://www.npmjs.com/package/@mediapipe/tasks-vision).
 
 ## Run it
 
-Node.js 22 is installed. In this folder:
+Node.js 22 is installed. From the `AR/` folder:
 
 ```sh
 npm install      # first time only
@@ -46,59 +59,54 @@ AR in the browser **requires HTTPS**, so a plain `http://` address won't work.
 
 **Option A: same Wi-Fi (quick, Android only).** Open the `Network:` URL in Chrome on your phone. The certificate is self-signed, so tap **Advanced → Proceed**. iPhones handle self-signed certificates poorly; use option B for them.
 
-**Option B: free HTTPS tunnel (works on any phone, any network).**
+**Option B: free HTTPS quick tunnel (any phone, any network, no account).** With `npm run dev` running in `AR/`, in a second terminal:
+
 ```sh
 winget install --id Cloudflare.cloudflared   # first time only
 cloudflared tunnel --url https://localhost:5173 --no-tls-verify
 ```
-It prints an address like `https://random-words.trycloudflare.com`. Open it on your phone. No account is needed. The address changes every time you run it, and anyone who has the address can open the page while the tunnel runs.
 
-**Option C: share the built app through a tunnel (any phone, no account).**
+It prints an address like `https://random-words.trycloudflare.com`. Open it on your phone. The address changes every time, and anyone who has it can open the page while the tunnel runs.
+
+**Option C: tunnel the built app.** From `AR/`:
+
 ```sh
 npm run build
-npm run preview   # serves dist/ at https://localhost:4173
+npm run preview   # serves AR/dist/ at https://localhost:4173
 cloudflared tunnel --url https://localhost:4173 --no-tls-verify
 ```
-Open the printed `https://….trycloudflare.com` address on your phone. Same caveats as option B: it lasts only while both commands run.
 
 ## Phone requirements
 
-- **Android**: Chrome with **Google Play Services for AR** (ARCore) installed. Most phones from the last ~5 years support it. Chrome offers to install it if it's missing.
-  - For the dog to **see people**, Chrome must share the camera image with the page (**WebXR Raw Camera Access, Chrome 107+**). If it doesn't, the status line says so; placing the dog and tricks still work. If your Chrome doesn't offer it, try enabling **WebXR Incubations** in `chrome://flags`.
-  - **Depth sensing** (ARCore Depth API) is optional; it makes people's distances more accurate.
-- **iPhone**: **Safari**. Camera mode needs iOS 14.3+; Quick Look needs iOS 12+ (Quick Look from Chrome on iOS is unreliable).
+- **Android**: Chrome with **Google Play Services for AR** (ARCore). Chrome offers to install it if it's missing.
+  - For the dog to **see your hand**, Chrome must share the camera image with the page (**WebXR Raw Camera Access, Chrome 107+**). If it doesn't, the status line says so; placing the dog, commands, following and tricks still work. If your Chrome doesn't offer it, try enabling **WebXR Incubations** in `chrome://flags`.
+  - **Depth sensing** (ARCore Depth API) is optional; it makes hand distances (petting, hiding the dog behind your hand) more accurate.
+- **iPhone**: **Safari**. Camera mode needs iOS 14.3+; Quick Look needs iOS 12+.
 - **Computer**: any modern browser with a webcam, for camera mode (over HTTPS or localhost).
 
-## Files
+## Files (in `AR/`)
 
 | File | What it does |
 |---|---|
-| `index.html` | Page layout: start screen (title, status text, character picker, AR and camera buttons), the camera-mode video, and the AR overlay (hint, status line, trick buttons, picker, vision toggle, toolbar, vision canvas) |
-| `src/main.ts` | Detects the device and picks WebXR, Quick Look + camera mode, or preview + camera mode; builds the pickers; shows the centered "Checking AR support…" screen until it knows |
-| `src/selection.ts` | The shared "selected character" state used by both pickers, the preview, AR and Quick Look |
-| `src/webxr.ts` | Android AR session: surface detection (hit-test), reticle, tap to place the selected character facing you, idle animation, shadows, buttons; camera access + depth for the dog's vision |
-| `src/cameraMode.ts` | Fallback without WebXR (iPhone, computer): live camera video behind the 3D view, one dog on a virtual floor, drag to move it |
-| `src/dogPlay.ts` | Shared by both modes: the cached people detector, one brain per dog, hearts, trick buttons, status line, vision drawing |
-| `src/dog/types.ts` | The dog contracts: tricks, `DogControls` (what the brain tells the model), petting zones, `DogBrain` |
-| `src/dog/brain.ts` | The dog's behaviour: who to look at (one person at a time), petting detection, tricks, all smoothed |
-| `src/dog/fx.ts` | Flat-colour hearts that float up when the dog is petted |
-| `src/vision/types.ts` | The vision contracts: people in image space (`Human2D`), `CameraModel`, people in world space (`PerceivedHuman`) |
-| `src/vision/detector.ts` | MediaPipe pose + face landmarkers → people with eyes, gaze, shoulders and hands, tracked across frames |
-| `src/vision/lift.ts` | Places people in 3D (depth, or eye / shoulder size) and snaps reaching hands to the dog |
-| `src/vision/xrCamera.ts` | Reads the WebXR camera image (Raw Camera Access) and depth buffer into snapshots for the detector |
-| `src/quicklook.ts` | iPhone path: exports the selected character to `.usdz` in the browser (re-exported when you switch) and opens Apple's AR viewer |
-| `src/preview.ts` | The orbitable, animated 3D preview on the start screen, framed to fit each character |
-| `src/shadow.ts` | The invisible shadow-catcher plane under each character |
-| `src/models/types.ts` | The shared `Character` / `ModelInfo` contract every model follows |
-| `src/models/woman.ts`, `man.ts`, `dog.ts` | The three characters: shapes, colours, sizes and idle animation (the dog also poses itself from its brain's controls: looking, petting, tricks) |
-| `src/models/index.ts` | The list of characters (`MODELS`, in picker order) and the default one |
+| `index.html` | Page layout: start screen (title, status, creator panel, Deploy / Quick Look), the camera-mode video, and the AR overlay (hint, status, command / trick buttons, vision toggle, exit, vision canvas) |
+| `src/main.ts` | Detects the device and picks WebXR, camera mode (+ Quick Look on iOS) or the creator alone; mounts the creator; shows the centered "Checking AR support…" screen until it knows |
+| `src/creator.ts` | The character creator panel, bound to `dogConfigStore` |
+| `src/preview.ts` | The orbitable 3D preview of the current dog, rebuilt on every change and framed beside / above the panel |
+| `src/dog/types.ts` | The dog contracts: `DogConfig`, breed presets, `DogControls` (what the brain tells the model), `DogCharacter`, `DogBrain`, commands and modes |
+| `src/dog/config.ts` | Breed presets, defaults, the dice (`randomDogConfig`), validation, and the saved config store |
+| `src/models/dog.ts` | Builds the dog from a `DogConfig` (shapes, colours, real size) and poses it from the brain's controls |
+| `src/dog/brain.ts` | Behaviour: hand reactions and petting, follow / free roam / stay, go-to, commands, tricks, eye contact |
+| `src/dog/fx.ts` | Flat-colour hearts when the dog is petted |
+| `src/webxr.ts` | Android AR session: hit-test reticle, tap to place / send the dog, buttons, camera access + depth for vision |
+| `src/cameraMode.ts` | Fallback without WebXR: live camera video behind the 3D view, the dog on a virtual floor |
+| `src/dogPlay.ts` | Shared by both modes: the detector, the brain, command / trick buttons, status line, vision drawing |
+| `src/vision/*.ts` | Hand + face detection (MediaPipe), lifting them into 3D, the hand occluder, and the WebXR camera reader |
+| `src/quicklook.ts` | iPhone path: exports the current dog to `.usdz` in the browser (re-exported when it changes) for AR Quick Look |
+| `src/shadow.ts` | The invisible shadow-catcher plane under the dog |
 
 ## Tweaks
 
-- **Sizes and colours**: each character's file in `src/models/` (meters; colours are plain hex values on `MeshStandardMaterial`).
-- **Idle animation**: the `update(t)` function in each character's file.
-- **Default character / picker order**: `DEFAULT_MODEL_ID` and `MODELS` in `src/models/index.ts`.
-- **Add a character**: write a new file in `src/models/` that exports a `ModelInfo` (see `types.ts`), add its id to `ModelId`, and add it to `MODELS`.
-- **Shadow size**: `shadowSizeFor` in `src/shadow.ts`.
-- **Dog behaviour** (how long someone must look before eye contact, petting timing, turn speed): the constants at the top of `src/dog/brain.ts`. Trick lengths: `TRICK_DURATION` in `src/dog/types.ts`.
+- **Breeds** (sizes, default looks, colour swatches, names for the dice): `src/dog/config.ts`.
+- **Dog behaviour** (follow distances, petting timing, turn speed): the constants at the top of `src/dog/brain.ts`. Trick lengths: `TRICK_DURATION` in `src/dog/types.ts`.
 - **Camera mode framing** (assumed lens field of view, floor height, dog distance): the constants at the top of `src/cameraMode.ts`.
+- **Shadow size**: `shadowSizeFor` in `src/shadow.ts`.

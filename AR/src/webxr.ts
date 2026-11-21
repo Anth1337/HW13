@@ -1,54 +1,107 @@
 import * as THREE from "three";
+import { dogConfigStore } from "./dog/config";
+import type { DogCharacter } from "./dog/types";
 import { createDogPlay, type PlayUI } from "./dogPlay";
-import { getModel, type Character, type ModelInfo } from "./models";
-import { isDogCharacter } from "./models/dog";
-import { selection } from "./selection";
+import { createDogCharacter } from "./models/dog";
 import { createShadowCatcher, shadowSizeFor } from "./shadow";
-import { createXRVisionSource } from "./vision/xrCamera";
+import { DEPTH_SENSING_INIT, createXRVisionSource, gpuDepthOcclusionActive } from "./vision/xrCamera";
 import type { XRVisionSource } from "./vision/types";
 
+/**
+ * The AR overlay elements (DOM contract ids in comments). Build it with arUIFromDOM().
+ * Every field is required; dogPlay.ts uses the PlayUI subset.
+ */
 export type ARUI = PlayUI & {
+  /** #overlay — dom-overlay root; class "camera-mode" in camera mode. */
   overlay: HTMLElement;
+  /** #hint */
   hint: HTMLElement;
-  /**
-   * Bottom controls (trick buttons, character picker, vision toggle, toolbar). Taps on it must
-   * not place a character.
-   */
+  /** #status (status chip, hidden when empty) — from PlayUI. */
+  /** #vision-canvas — from PlayUI. */
+  /** #ar-controls — everything tappable; beforexrselect is prevented on it. */
   controls: HTMLElement;
-  undo: HTMLButtonElement;
-  clear: HTMLButtonElement;
+  /** #cmd-sit, #cmd-lie, #cmd-come, #cmd-mode, #trick-rollOver, #trick-jump, #trick-spin, #btn-vision — from PlayUI. */
+  /** #btn-exit */
   exit: HTMLButtonElement;
 };
 
-const NO_CAMERA_ACCESS =
-  "This phone's browser doesn't share the camera image with web pages, so the dog can't see people. Tricks still work.";
-/** Seconds to wait for the first camera image before saying the browser doesn't share it. */
-const CAMERA_ACCESS_GRACE = 3;
-
-/**
- * Session features. "camera-access" (Raw Camera Access, Chrome 107+ on Android) lets the dog see
- * people; "depth-sensing" (cpu-optimized only: three.js leaves CPU depth alone) gives metric
- * distances to them. Both are optional, so AR still starts without them.
- */
-function fullSessionInit(overlay: HTMLElement): XRSessionInit {
+/** Queries the DOM contract ids. Throws if one is missing (index.html out of sync). */
+export function arUIFromDOM(): ARUI {
+  const get = <T extends HTMLElement>(id: string): T => {
+    const el = document.getElementById(id);
+    if (!el) throw new Error(`Missing #${id} in index.html`);
+    return el as T;
+  };
   return {
-    requiredFeatures: ["hit-test"],
-    optionalFeatures: ["dom-overlay", "camera-access", "depth-sensing"],
-    domOverlay: { root: overlay },
-    depthSensing: {
-      usagePreference: ["cpu-optimized"],
-      dataFormatPreference: ["luminance-alpha", "float32"],
-    },
-  } as XRSessionInit;
+    overlay: get("overlay"),
+    hint: get("hint"),
+    status: get("status"),
+    visionCanvas: get<HTMLCanvasElement>("vision-canvas"),
+    controls: get("ar-controls"),
+    cmdSit: get<HTMLButtonElement>("cmd-sit"),
+    cmdLie: get<HTMLButtonElement>("cmd-lie"),
+    cmdCome: get<HTMLButtonElement>("cmd-come"),
+    cmdMode: get<HTMLButtonElement>("cmd-mode"),
+    trickRollOver: get<HTMLButtonElement>("trick-rollOver"),
+    trickJump: get<HTMLButtonElement>("trick-jump"),
+    trickSpin: get<HTMLButtonElement>("trick-spin"),
+    visionToggle: get<HTMLButtonElement>("btn-vision"),
+    exit: get<HTMLButtonElement>("btn-exit"),
+  };
 }
 
-/** The original feature set, for browsers that reject the newer optional features outright. */
-function minimalSessionInit(overlay: HTMLElement): XRSessionInit {
-  return {
-    requiredFeatures: ["hit-test"],
-    optionalFeatures: ["dom-overlay"],
-    domOverlay: { root: overlay },
-  };
+const NO_CAMERA_ACCESS =
+  "This browser doesn't share the camera image — petting with your hand won't work, but commands and tricks do";
+/** Seconds to wait for the first camera image before saying the browser doesn't share it. */
+const CAMERA_ACCESS_GRACE = 3;
+/** Hold the screen this long to re-place the dog at the reticle. */
+const LONG_PRESS_S = 0.6;
+/** Taps within this height of the dog's floor send it there. */
+const SAME_FLOOR = 0.15;
+const MAX_GOTO_DIST = 8;
+const MARKER_LIFE = 1.2;
+
+/*
+ * Session features. "camera-access" (Raw Camera Access, Chrome on Android) gives the hand
+ * detector the camera image. "depth-sensing" is requested cpu-optimized ONLY (DEPTH_SENSING_INIT
+ * from xrCamera.ts): three r187's built-in GPU depth occlusion (WebXRDepthSensing) samples the
+ * depth texture as a sampler2DArray and writes its raw .r into gl_FragDepth, which only works for
+ * runtimes that hand out normalised texture-array depth (Quest). Chrome/ARCore hands out a
+ * TEXTURE_2D of raw millimetres, so gpu-optimized there would write garbage depth over the whole
+ * screen and hide the dog entirely. With cpu depth we get metric hand depth (lift.ts) and occlude
+ * with the hand occluder mesh instead. If a runtime ever grants gpu depth anyway, three occludes
+ * by itself and gpuDepthOcclusionActive() turns our occluder off.
+ * (Note on that GPU path: the environment depth at the dog's feet equals the feet's own depth,
+ * so the feet would z-fight with the floor there; nothing we can lift without floating the dog.)
+ */
+function sessionInits(overlay: HTMLElement): XRSessionInit[] {
+  const domOverlay = { root: overlay };
+  return [
+    {
+      requiredFeatures: ["hit-test"],
+      optionalFeatures: ["dom-overlay", "camera-access", "depth-sensing"],
+      domOverlay,
+      depthSensing: DEPTH_SENSING_INIT,
+    } as XRSessionInit,
+    // Older Chrome can reject the depth-sensing dictionary outright.
+    { requiredFeatures: ["hit-test"], optionalFeatures: ["dom-overlay", "camera-access"], domOverlay } as XRSessionInit,
+    { requiredFeatures: ["hit-test"], optionalFeatures: ["dom-overlay"], domOverlay },
+  ];
+}
+
+async function requestARSession(overlay: HTMLElement): Promise<XRSession> {
+  let lastErr: unknown;
+  for (const init of sessionInits(overlay)) {
+    try {
+      return await navigator.xr!.requestSession("immersive-ar", init);
+    } catch (err) {
+      // A SecurityError (no user activation) won't get better on retry.
+      if (err instanceof DOMException && err.name === "SecurityError") throw err;
+      console.warn("[ar] session init rejected, retrying with fewer features", err);
+      lastErr = err;
+    }
+  }
+  throw lastErr;
 }
 
 /** True where WebXR "immersive-ar" works: Chrome on an ARCore Android phone. */
@@ -62,48 +115,34 @@ export async function isWebXRARSupported(): Promise<boolean> {
 }
 
 /**
- * Starts a WebXR AR session. The camera feed fills the screen, a ring shows the
- * surface in the middle of the view, and tapping the screen places the selected
- * character there, facing you. Every placed character plays its idle animation.
+ * Starts a WebXR AR session with the dog from the creator (dogConfigStore).
  *
- * Placed dogs also get a brain: the AR camera image (Raw Camera Access) goes through the
- * people detector, people are lifted into world space, and each dog reacts to petting, makes
- * eye contact with one person at a time and does tricks from the trick buttons.
+ * Flow: scanning → reticle on a surface → first tap places the dog there facing you. Then a tap
+ * on the floor sends the dog to that spot, a long press (≥ 0.6 s) re-places it at the reticle,
+ * and the overlay buttons command it. The camera image (Raw Camera Access) goes through the hand
+ * detector so the dog reacts to the user's hand; a hand occluder hides the dog behind the hand.
  *
- * Call this from a click handler (browsers require a user gesture). `onEnd`
- * runs when the session ends, whether from the Exit button or the system back gesture.
+ * Call from a click handler (user gesture). `onEnd` runs when the session ends (Exit button or
+ * the system back gesture). Throws (after cleaning up) if the session can't start.
  */
-export async function startARSession(
-  renderer: THREE.WebGLRenderer,
-  ui: ARUI,
-  onEnd: () => void,
-): Promise<void> {
-  let session: XRSession;
-  try {
-    session = await navigator.xr!.requestSession("immersive-ar", fullSessionInit(ui.overlay));
-  } catch (err) {
-    // Older Chrome can reject the depth-sensing dictionary or unknown features: retry the old set.
-    console.warn("[ar] full feature set rejected, retrying with the minimal one", err);
-    session = await navigator.xr!.requestSession("immersive-ar", minimalSessionInit(ui.overlay));
-  }
+export async function startARSession(renderer: THREE.WebGLRenderer, ui: ARUI, onEnd: () => void): Promise<void> {
+  const session = await requestARSession(ui.overlay);
 
   // ---- Scene ----
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(); // WebXR drives the real camera pose and projection
 
   scene.add(new THREE.HemisphereLight(0xffffff, 0x777777, 2.2));
-
   const sun = new THREE.DirectionalLight(0xffffff, 1.8);
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  sun.shadow.camera.near = 0.1;
-  sun.shadow.camera.far = 10;
+  sun.shadow.mapSize.set(1024, 1024);
   sun.shadow.bias = -0.0005;
   sun.shadow.normalBias = 0.01;
+  sun.shadow.camera.near = 0.1;
   scene.add(sun, sun.target);
   const SUN_OFFSET = new THREE.Vector3(0.6, 3, 0.4);
 
-  // Reticle: a flat ring that sits on the surface the phone points at.
+  // Reticle: a flat ring on the surface the phone points at.
   const reticle = new THREE.Mesh(
     new THREE.RingGeometry(0.07, 0.09, 40).rotateX(-Math.PI / 2),
     new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 }),
@@ -112,31 +151,149 @@ export async function startARSession(
   reticle.visible = false;
   scene.add(reticle);
 
-  type Placed = { anchor: THREE.Group; character: Character; info: ModelInfo; born: number };
-  const placed: Placed[] = [];
-  let now = 0; // seconds, from the XR frame time
+  // Go-to marker: a ring that expands and fades where the user tapped.
+  const markerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false });
+  const marker = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.065, 40).rotateX(-Math.PI / 2), markerMat);
+  marker.visible = false;
+  scene.add(marker);
+  let markerAge = Infinity;
+
+  // Long-press progress ring around the reticle.
+  const holdMat = new THREE.MeshBasicMaterial({ color: 0x7cd992, transparent: true, opacity: 0.9, depthWrite: false });
+  const holdRing = new THREE.Mesh(new THREE.RingGeometry(0.095, 0.11, 40, 1, 0, 0.001), holdMat);
+  holdRing.matrixAutoUpdate = false;
+  holdRing.visible = false;
+  scene.add(holdRing);
+
+  const catcher = createShadowCatcher(1);
+  catcher.visible = false;
+  scene.add(catcher);
+
+  // ---- State (all declared before anything below can call into it) ----
+  const play = createDogPlay(scene, ui, (u, v, w, h) => ({ x: u * w, y: v * h }));
+  let dog: DogCharacter | null = null;
+  let anchor: THREE.Group | null = null;
+  let floorY = 0;
+  let hitTestSource: XRHitTestSource | null = null;
+  let transientSource: XRTransientInputHitTestSource | null = null;
+  let vision: XRVisionSource | null = null;
+  let now = 0;
   let lastNow: number | null = null;
   let firstFrame: number | null = null;
-
-  // ---- Dog play: people detection, brains, hearts, tricks, status chip ----
-  // Assumption: in handheld AR the XR view fills the screen and the camera image is aligned
-  // with that view, so image uv maps straight onto the overlay for the vision drawing.
-  const play = createDogPlay(scene, ui, (u, v, w, h) => ({ x: u * w, y: v * h }));
-  let vision: XRVisionSource | null = null;
-  const viewerWorld = new THREE.Vector3();
-
-  // ---- Session setup ----
-  let hitTestSource: XRHitTestSource | null = null;
-
   let lastHint = "";
+  let hintOverride: { text: string; until: number } | null = null;
+  /** Active press: when it started and whether the long press already fired. */
+  let press: { source: XRInputSource; start: number; fired: boolean } | null = null;
+  /** Latest transient (touch) hit per input source, refreshed every frame. */
+  const touchHits = new Map<XRInputSource, THREE.Vector3>();
+  const viewer = { position: new THREE.Vector3(), forward: new THREE.Vector3(0, 0, -1) };
+  const viewerQuat = new THREE.Quaternion();
+  const reticlePos = new THREE.Vector3();
+  const rayO = new THREE.Vector3();
+  const rayD = new THREE.Vector3();
+  const tmpQ = new THREE.Quaternion();
+
+  const dogName = () => dogConfigStore.get().name.trim() || "your dog";
   const setHint = (text: string) => {
     if (text !== lastHint) ui.hint.textContent = lastHint = text;
   };
+  const flashHint = (text: string, seconds = 2.5) => {
+    hintOverride = { text, until: now + seconds };
+  };
 
-  // Install the AR loop *before* the session starts. three.js stops its normal
-  // (non-XR) loop when the session starts, so the loop only runs on XR frames.
-  // Setting it before the session also keeps the preview scene from drawing
-  // over the camera feed while the session is starting up.
+  function fitShadow() {
+    if (!dog || !anchor) return;
+    const p = anchor.position;
+    const size = shadowSizeFor(dog);
+    catcher.visible = true;
+    catcher.scale.set(size, 1, size);
+    catcher.position.set(p.x, floorY + 0.001, p.z);
+    sun.target.position.set(p.x, floorY, p.z);
+    sun.position.copy(sun.target.position).add(SUN_OFFSET);
+    sun.target.updateMatrixWorld();
+    const radius = Math.max(0.5, dog.length * 0.8 + dog.height * 0.6 + 0.25); // margin for jumps / rolls
+    const cam = sun.shadow.camera;
+    if (cam.right !== radius) {
+      cam.left = cam.bottom = -radius;
+      cam.right = cam.top = radius;
+      cam.far = SUN_OFFSET.length() + radius * 2;
+      cam.updateProjectionMatrix();
+    }
+  }
+
+  /** First placement (creates the dog) or re-placement at `point`, facing the phone. */
+  function placeAt(point: THREE.Vector3) {
+    floorY = point.y;
+    if (!dog || !anchor) {
+      dog = createDogCharacter(dogConfigStore.get());
+      anchor = new THREE.Group();
+      anchor.add(dog.root);
+      scene.add(anchor);
+      play.attach(dog, anchor, floorY);
+    }
+    play.brain!.placeAt(point, viewer.position, floorY);
+    anchor.updateMatrixWorld(true);
+    fitShadow();
+    navigator.vibrate?.(20);
+  }
+
+  function showMarker(point: THREE.Vector3) {
+    marker.position.set(point.x, floorY + 0.003, point.z);
+    markerAge = 0;
+    marker.visible = true;
+  }
+
+  /** Where did this tap land? Touch hit test first, else the tap ray against the dog's floor plane. */
+  function tapPoint(source: XRInputSource, frame: XRFrame | undefined): { point: THREE.Vector3; onFloor: boolean } | null {
+    const hit = touchHits.get(source);
+    if (hit) return { point: hit.clone(), onFloor: Math.abs(hit.y - floorY) <= SAME_FLOOR };
+    const refSpace = renderer.xr.getReferenceSpace();
+    const pose = frame && refSpace ? frame.getPose(source.targetRaySpace, refSpace) : undefined;
+    if (!pose) return null;
+    const { position: p, orientation: q } = pose.transform;
+    rayO.set(p.x, p.y, p.z);
+    rayD.set(0, 0, -1).applyQuaternion(tmpQ.set(q.x, q.y, q.z, q.w));
+    if (rayD.y > -1e-3) return null; // pointing at or above the horizon: never reaches the floor
+    const t = (floorY - rayO.y) / rayD.y;
+    if (t <= 0 || t > MAX_GOTO_DIST) return null;
+    return { point: rayO.clone().addScaledVector(rayD, t), onFloor: true };
+  }
+
+  // ---- Input ----
+  const onSelectStart = (e: XRInputSourceEvent) => {
+    press = { source: e.inputSource, start: now, fired: false };
+  };
+  const onSelectEnd = (e: XRInputSourceEvent) => {
+    if (press?.source === e.inputSource) {
+      // Keep `press` until "select" (fired after selectend in some browsers, before in others).
+      const p = press;
+      setTimeout(() => {
+        if (press === p) press = null;
+      }, 0);
+    }
+  };
+  const onSelect = (e: XRInputSourceEvent) => {
+    const longPress = press?.source === e.inputSource && press.fired;
+    press = null;
+    holdRing.visible = false;
+    if (longPress) return; // already re-placed while held
+    if (!dog) {
+      if (reticle.visible) placeAt(reticlePos);
+      return;
+    }
+    const tap = tapPoint(e.inputSource, e.frame);
+    if (!tap) return;
+    if (!tap.onFloor) {
+      flashHint(`Tap the floor near ${dogName()} (hold to move ${dogName()})`);
+      return;
+    }
+    tap.point.y = floorY;
+    play.brain!.goTo(tap.point);
+    showMarker(tap.point);
+    navigator.vibrate?.(10);
+  };
+
+  // ---- Frame loop (installed before setSession so the preview loop never draws over the camera) ----
   renderer.setAnimationLoop((time, frame) => {
     if (!frame || !hitTestSource) return;
     now = time / 1000;
@@ -145,45 +302,87 @@ export async function startARSession(
     firstFrame ??= now;
 
     const refSpace = renderer.xr.getReferenceSpace();
-    const hit = frame.getHitTestResults(hitTestSource)[0];
-    const pose = hit && refSpace ? hit.getPose(refSpace) : undefined;
-    if (pose) {
-      reticle.visible = true;
-      reticle.matrix.fromArray(pose.transform.matrix);
-    } else {
-      reticle.visible = false;
+    const viewerPose = refSpace ? frame.getViewerPose(refSpace) : undefined;
+    if (viewerPose) {
+      const { position: p, orientation: q } = viewerPose.transform;
+      viewer.position.set(p.x, p.y, p.z);
+      viewerQuat.set(q.x, q.y, q.z, q.w);
+      viewer.forward.set(0, 0, -1).applyQuaternion(viewerQuat);
     }
 
-    if (!reticle.visible) setHint("Slowly move your phone to find the floor or a table");
-    else if (placed.length === 0) setHint(`Tap to place a ${getModel(selection.get()).label.toLowerCase()}`);
-    else setHint(`${placed.length} placed · tap to place another`);
+    const hit = frame.getHitTestResults(hitTestSource)[0];
+    const pose = hit && refSpace ? hit.getPose(refSpace) : undefined;
+    reticle.visible = !!pose;
+    if (pose) {
+      reticle.matrix.fromArray(pose.transform.matrix);
+      reticlePos.setFromMatrixPosition(reticle.matrix);
+    }
 
-    // Vision: at most one camera image every ~100 ms. The (large) detector only loads once the
-    // browser has actually shared a camera image.
+    touchHits.clear();
+    if (transientSource && refSpace) {
+      for (const r of frame.getHitTestResultsForTransientInput(transientSource)) {
+        const first = r.results[0]?.getPose(refSpace);
+        if (first) {
+          const p = first.transform.position;
+          touchHits.set(r.inputSource, new THREE.Vector3(p.x, p.y, p.z));
+        }
+      }
+    }
+
+    // Long press → re-place at the reticle (fires while still held, with a progress ring).
+    holdRing.visible = false;
+    if (press && !press.fired && dog && reticle.visible) {
+      const held = now - press.start;
+      if (held >= LONG_PRESS_S) {
+        press.fired = true;
+        placeAt(reticlePos);
+        flashHint(`Moved ${dogName()}`, 1.5);
+      } else if (held > 0.15) {
+        const frac = (held - 0.15) / (LONG_PRESS_S - 0.15);
+        holdRing.geometry.dispose();
+        holdRing.geometry = new THREE.RingGeometry(0.095, 0.115, 40, 1, Math.PI / 2, frac * Math.PI * 2).rotateX(
+          -Math.PI / 2,
+        );
+        holdRing.matrix.copy(reticle.matrix);
+        holdRing.visible = true;
+      }
+    }
+
+    // Hints.
+    if (hintOverride && now > hintOverride.until) hintOverride = null;
+    if (hintOverride) setHint(hintOverride.text);
+    else if (!dog) setHint(reticle.visible ? `Tap to place ${dogName()}` : "Slowly move your phone to find the floor");
+    else setHint(`Tap the floor to send ${dogName()} · hold to move`);
+
+    // Vision: grab the camera image only when it can be used (to discover camera access, then
+    // only when the detector is ready and a detection is due). Each grab is a readPixels.
     if (vision) {
-      // Only read the camera back when the image can be used: until the first image proves
-      // camera access works, then only once the detector is ready (not while it downloads, and
-      // not at all if it failed to load). Each grab is a synchronous readPixels.
-      const wantShot = !vision.available || play.detectorState === "ready";
-      const shot = wantShot ? vision.grab(frame, time) : null;
+      const due = vision.available ? play.wantsFrame(time) : true;
+      const shot = due ? vision.grab(frame, time) : null;
       if (vision.available) {
         play.setNote(null);
         play.ensureDetector();
       } else if (now - firstFrame > CAMERA_ACCESS_GRACE) {
         play.setNote(NO_CAMERA_ACCESS);
       }
-      if (shot) play.see(shot.image, time, shot.cam);
+      if (shot && play.detectorState === "ready") play.see(shot.image, time, shot.cam);
     } else if (now - firstFrame > CAMERA_ACCESS_GRACE) {
       play.setNote(NO_CAMERA_ACCESS);
     }
 
-    const viewerPose = refSpace ? frame.getViewerPose(refSpace) : undefined;
-    if (viewerPose) {
-      const p = viewerPose.transform.position;
-      viewerWorld.set(p.x, p.y, p.z);
+    play.handOcclusion = !gpuDepthOcclusionActive(renderer);
+    play.update(dt, viewer); // brain, then dog.update(t)
+    if (dog) fitShadow();
+
+    if (marker.visible) {
+      markerAge += dt;
+      const k = markerAge / MARKER_LIFE;
+      if (k >= 1) marker.visible = false;
+      else {
+        marker.scale.setScalar(1 + k * 1.5);
+        markerMat.opacity = 0.9 * (1 - k);
+      }
     }
-    play.update(dt, viewerWorld); // dog brains run before the dogs pose themselves
-    for (const p of placed) p.character.update(now - p.born);
 
     renderer.render(scene, camera);
   });
@@ -195,151 +394,65 @@ export async function startARSession(
     const source = await session.requestHitTestSource?.({ space: viewerSpace });
     if (!source) throw new Error("This browser can't find surfaces (no WebXR hit-test).");
     hitTestSource = source;
+    try {
+      transientSource =
+        (await session.requestHitTestSourceForTransientInput?.({ profile: "generic-touchscreen" })) ?? null;
+    } catch (err) {
+      console.warn("[ar] no touch hit test; taps use the floor plane", err);
+    }
   } catch (err) {
+    renderer.setAnimationLoop(null);
     play.dispose();
+    disposeScene();
     await session.end().catch(() => {});
     throw err; // the caller shows the error on the start screen
   }
   try {
     vision = createXRVisionSource(renderer, session);
   } catch (err) {
-    console.warn("[ar] no camera image for people detection", err); // tricks still work
+    console.warn("[ar] no camera image for hand detection", err); // commands still work
   }
   ui.overlay.classList.remove("camera-mode");
   ui.overlay.hidden = false;
 
-  // Taps on the overlay picker and buttons must not also count as "place a character".
+  // Taps on the overlay buttons must not also count as a tap in the scene.
   const blockSelect = (e: Event) => e.preventDefault();
   ui.controls.addEventListener("beforexrselect", blockSelect);
-
-  // ---- Actions ----
-  const camPos = new THREE.Vector3();
-  const scratch = new THREE.Vector3();
-
-  function place() {
-    if (!reticle.visible) return;
-    const info = getModel(selection.get());
-    const character = info.create();
-    const anchor = new THREE.Group();
-    anchor.position.setFromMatrixPosition(reticle.matrix);
-    // Stand upright and turn around Y so +Z (the character's front) faces the phone.
-    camPos.setFromMatrixPosition(renderer.xr.getCamera().matrixWorld);
-    anchor.rotation.y = Math.atan2(camPos.x - anchor.position.x, camPos.z - anchor.position.z);
-    anchor.add(character.root);
-    scene.add(anchor);
-    anchor.updateMatrixWorld(true);
-    character.update(0);
-    if (isDogCharacter(character)) play.addDog(character);
-    placed.push({ anchor, character, info, born: now });
-    fitShadowToPlaced();
-    updateButtons();
-  }
-
-  function remove(p: Placed) {
-    scene.remove(p.anchor);
-    if (isDogCharacter(p.character)) play.removeDog(p.character);
-  }
-
-  function undo() {
-    const last = placed.pop();
-    if (last) remove(last);
-    fitShadowToPlaced();
-    updateButtons();
-  }
-
-  function clear() {
-    for (const p of placed) remove(p);
-    placed.length = 0;
-    fitShadowToPlaced();
-    updateButtons();
-  }
-
-  /**
-   * Keep the sun's shadow camera around every placed character (feet to head) so each
-   * one casts a full shadow. A 1.8 m person needs a much bigger box than the dog.
-   */
-  function fitShadowToPlaced() {
-    fitShadowCatchers();
-    if (placed.length === 0) return;
-    const box = new THREE.Box3();
-    let tallest = 0;
-    for (const p of placed) {
-      box.expandByPoint(p.anchor.position);
-      box.expandByPoint(scratch.copy(p.anchor.position).setY(p.anchor.position.y + p.info.height));
-      tallest = Math.max(tallest, p.info.height);
-    }
-    const center = box.getCenter(new THREE.Vector3());
-    // Extra margin: a jumping or rolling dog leaves its standing box.
-    const radius = box.getSize(new THREE.Vector3()).length() / 2 + 0.5 + tallest * 0.3;
-
-    sun.target.position.copy(center);
-    sun.position.copy(center).add(SUN_OFFSET);
-    sun.target.updateMatrixWorld();
-    const cam = sun.shadow.camera;
-    cam.left = cam.bottom = -radius;
-    cam.right = cam.top = radius;
-    cam.far = SUN_OFFSET.length() + radius * 2;
-    cam.updateProjectionMatrix();
-  }
-
-  /**
-   * One shadow catcher per surface height (floor, table, ...), sized to cover every character
-   * standing on it. Separate per-character planes would overlap where characters stand close
-   * together, drawing the shadow twice (too dark) and z-fighting.
-   */
-  const catchers: THREE.Mesh[] = [];
-  const LEVEL_TOLERANCE = 0.03; // characters within 3 cm of height share a surface
-  function fitShadowCatchers() {
-    const levels: { y: number; box: THREE.Box3 }[] = [];
-    for (const p of placed) {
-      const { x, y, z } = p.anchor.position;
-      const half = shadowSizeFor(p.info) / 2;
-      let level = levels.find((l) => Math.abs(l.y - y) < LEVEL_TOLERANCE);
-      if (!level) levels.push((level = { y, box: new THREE.Box3() }));
-      level.box.expandByPoint(scratch.set(x - half, y, z - half));
-      level.box.expandByPoint(scratch.set(x + half, y, z + half));
-    }
-    while (catchers.length > levels.length) scene.remove(catchers.pop()!);
-    levels.forEach((level, i) => {
-      if (!catchers[i]) scene.add((catchers[i] = createShadowCatcher(1)));
-      const c = catchers[i];
-      const { min, max } = level.box;
-      c.scale.set(max.x - min.x, 1, max.z - min.z);
-      c.position.set((min.x + max.x) / 2, level.y + 0.001, (min.z + max.z) / 2);
-    });
-  }
-
-  function updateButtons() {
-    ui.undo.disabled = placed.length === 0;
-    ui.clear.disabled = placed.length === 0;
-  }
-
-  const onUndo = () => undo();
-  const onClear = () => clear();
   const onExit = () => void session.end();
-  ui.undo.addEventListener("click", onUndo);
-  ui.clear.addEventListener("click", onClear);
   ui.exit.addEventListener("click", onExit);
-  session.addEventListener("select", place);
-  updateButtons();
+  session.addEventListener("selectstart", onSelectStart);
+  session.addEventListener("selectend", onSelectEnd);
+  session.addEventListener("select", onSelect);
+
+  function disposeScene() {
+    if (anchor) scene.remove(anchor);
+    dog?.dispose();
+    dog = null;
+    anchor = null;
+    for (const m of [reticle, marker, holdRing]) {
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+    sun.shadow.map?.dispose();
+  }
 
   // ---- Teardown ----
   session.addEventListener("end", () => {
     hitTestSource?.cancel();
     hitTestSource = null;
+    transientSource?.cancel();
+    transientSource = null;
     vision?.dispose();
     vision = null;
-    play.dispose(); // the people detector itself stays cached for the next session
-    session.removeEventListener("select", place);
+    renderer.setAnimationLoop(null);
+    play.dispose(); // the detector itself stays cached for the next session
+    session.removeEventListener("selectstart", onSelectStart);
+    session.removeEventListener("selectend", onSelectEnd);
+    session.removeEventListener("select", onSelect);
     ui.controls.removeEventListener("beforexrselect", blockSelect);
-    ui.undo.removeEventListener("click", onUndo);
-    ui.clear.removeEventListener("click", onClear);
     ui.exit.removeEventListener("click", onExit);
     ui.overlay.hidden = true;
-    reticle.geometry.dispose();
-    (reticle.material as THREE.Material).dispose();
-    sun.shadow.map?.dispose();
-    renderer.setAnimationLoop(null);
+    disposeScene();
     onEnd();
   });
 }

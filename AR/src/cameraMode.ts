@@ -1,6 +1,7 @@
 import * as THREE from "three";
+import { dogConfigStore } from "./dog/config";
 import { createDogPlay } from "./dogPlay";
-import { createDogCharacter, dogModel } from "./models/dog";
+import { createDogCharacter } from "./models/dog";
 import { createShadowCatcher, shadowSizeFor } from "./shadow";
 import type { CameraModel } from "./vision/types";
 import type { ARUI } from "./webxr";
@@ -8,12 +9,17 @@ import type { ARUI } from "./webxr";
 /*
  * Camera mode: the fallback for browsers without WebXR AR (iPhone Safari, a computer with a
  * webcam). The live camera video fills the screen (object-fit: cover) behind the transparent
- * three.js canvas, and one dog stands on a virtual floor in front of the phone.
+ * three.js canvas, and the customised dog stands on a virtual floor in front of the phone.
  *
  * There is no tracking or hit test, so the 3D camera is fixed: at the origin, pitched down a
- * little, with a field of view assumed from typical phone / webcam lenses. The dog stays put on
- * the screen while the phone is held still. People in the video go through the same detector,
- * lift and brain as in WebXR, using a CameraModel that maps video uv through the cover crop.
+ * little, with a field of view assumed from typical phone / webcam lenses. Hands in the video go
+ * through the same detector, lift, brain and hand occluder as in WebXR, using a CameraModel that
+ * maps video uv through the cover crop. Tapping the virtual floor sends the dog there.
+ *
+ * The brain's "user" is not the camera itself but a point a little in front of it on the
+ * virtual floor: following / coming then stops the dog where it's still on screen (a dog 0.8 m
+ * from a camera held 1.3 m up would be below the bottom edge), and free roam wanders around a
+ * spot further ahead so the dog mostly stays in view.
  */
 
 /** Assumed horizontal field of view across the LONG side of the camera image (typical phone main camera / webcam). */
@@ -23,8 +29,10 @@ const FLOOR_Y = -1.3;
 const DOG_DISTANCE = 1.6;
 const MIN_DISTANCE = 0.6;
 const MAX_DISTANCE = 5;
-/** Run the detector at most this often (ms); MediaPipe on a full video frame is not free. */
-const DETECT_INTERVAL_MS = 100;
+/** Where the brain thinks the user is, metres ahead of the camera (see header). */
+const USER_AHEAD_FOLLOW = 0.75;
+const USER_AHEAD_FREE = 1.9;
+const MARKER_LIFE = 1.2;
 
 /** True when this browser can open a camera from a web page (needs HTTPS). */
 export function isCameraModeSupported(): boolean {
@@ -71,47 +79,51 @@ export async function startCameraMode(
   sun.shadow.mapSize.set(1024, 1024);
   sun.shadow.bias = -0.0005;
   sun.shadow.normalBias = 0.01;
-  const shadowCam = sun.shadow.camera;
-  shadowCam.left = shadowCam.bottom = -1.2;
-  shadowCam.right = shadowCam.top = 1.2;
-  shadowCam.near = 0.1;
-  shadowCam.far = 8;
-  shadowCam.updateProjectionMatrix();
+  sun.shadow.camera.near = 0.1;
   scene.add(sun, sun.target);
   const SUN_OFFSET = new THREE.Vector3(0.6, 3, 0.4);
 
   const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 50);
   camera.position.set(0, 0, 0);
 
-  const dog = createDogCharacter();
+  const dog = createDogCharacter(dogConfigStore.get());
   const anchor = new THREE.Group();
-  anchor.add(dog.root, createShadowCatcher(shadowSizeFor(dogModel) * 1.4));
+  anchor.add(dog.root);
   scene.add(anchor);
+  const catcher = createShadowCatcher(shadowSizeFor(dog));
+  scene.add(catcher);
 
+  const markerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0, depthWrite: false });
+  const marker = new THREE.Mesh(new THREE.RingGeometry(0.05, 0.065, 40).rotateX(-Math.PI / 2), markerMat);
+  marker.visible = false;
+  scene.add(marker);
+
+  // ---- State (declared before any setup call) ----
   const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), -FLOOR_Y);
-  function moveDog(x: number, z: number) {
-    // Keep it in a sensible range in front of the camera.
-    const dist = Math.hypot(x, z);
-    const clamped = THREE.MathUtils.clamp(dist, MIN_DISTANCE, MAX_DISTANCE);
-    if (dist > 1e-6) {
-      x *= clamped / dist;
-      z *= clamped / dist;
-    }
-    if (z > -MIN_DISTANCE * 0.5) z = -MIN_DISTANCE * 0.5; // never behind the camera
-    anchor.position.set(x, FLOOR_Y, z);
-    // Turn so +Z (the dog's front) faces the camera.
-    anchor.rotation.y = Math.atan2(camera.position.x - x, camera.position.z - z);
-    anchor.updateMatrixWorld(true);
-    sun.target.position.copy(anchor.position);
-    sun.position.copy(anchor.position).add(SUN_OFFSET);
-    sun.target.updateMatrixWorld();
-  }
-  moveDog(0, -DOG_DISTANCE);
-  dog.update(0);
-
-  // ---- Video uv ↔ screen (object-fit: cover crops the video to fill the screen) ----
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2();
+  const hitPoint = new THREE.Vector3();
+  const ndc = new THREE.Vector3();
+  const viewer = { position: new THREE.Vector3(), forward: new THREE.Vector3(0, 0, -1) };
+  const flatForward = new THREE.Vector3();
+  const canvas = renderer.domElement;
   let screenW = window.innerWidth;
   let screenH = window.innerHeight;
+  let markerAge = Infinity;
+  let last: number | null = null;
+  let lastVideoTime = -1;
+  let ended = false;
+
+  /** Same fixed camera for every detection, so one CameraModel serves all frames. */
+  const camModel: CameraModel = {
+    cameraToWorld: new THREE.Matrix4(),
+    ray(u, v, outOrigin, outDir) {
+      const p = videoUVToScreen(u, v, screenW, screenH);
+      ndc.set((p.x / screenW) * 2 - 1, 1 - (p.y / screenH) * 2, 0.5).unproject(camera);
+      outOrigin.copy(camera.position);
+      outDir.copy(ndc).sub(outOrigin).normalize();
+    },
+  };
 
   /** Video uv (v down) → CSS pixels of a w × h box that the video covers. */
   function videoUVToScreen(u: number, v: number, w: number, h: number) {
@@ -136,8 +148,7 @@ export async function startCameraMode(
     const fov = 2 * Math.atan(visibleH / 2 / focal);
     camera.fov = THREE.MathUtils.radToDeg(fov);
     camera.aspect = screenW / screenH;
-    // Pitch down so the dog's default spot sits a little below the middle of the screen
-    // (≈ 20° on a portrait phone, a bit more on a wide, narrow-FOV landscape webcam).
+    // Pitch down so the dog's default spot sits a little below the middle of the screen.
     const toDogMid = Math.atan2(-(FLOOR_Y + 0.3), DOG_DISTANCE);
     const pitch = THREE.MathUtils.clamp(toDogMid - 0.15 * fov, THREE.MathUtils.degToRad(10), THREE.MathUtils.degToRad(30));
     camera.rotation.set(-pitch, 0, 0);
@@ -146,86 +157,90 @@ export async function startCameraMode(
     camModel.cameraToWorld.extractRotation(camera.matrixWorld);
   }
 
-  /** Same fixed camera for every detection, so one CameraModel serves all frames. */
-  const ndc = new THREE.Vector3();
-  const camModel: CameraModel = {
-    cameraToWorld: new THREE.Matrix4(),
-    ray(u, v, outOrigin, outDir) {
-      const p = videoUVToScreen(u, v, screenW, screenH);
-      ndc.set((p.x / screenW) * 2 - 1, 1 - (p.y / screenH) * 2, 0.5).unproject(camera);
-      outOrigin.copy(camera.position);
-      outDir.copy(ndc).sub(outOrigin).normalize();
-    },
-  };
+  function followShadow() {
+    const p = anchor.position;
+    catcher.position.set(p.x, FLOOR_Y + 0.001, p.z);
+    sun.target.position.set(p.x, FLOOR_Y, p.z);
+    sun.position.copy(sun.target.position).add(SUN_OFFSET);
+    sun.target.updateMatrixWorld();
+  }
+
   layout();
+  const radius = Math.max(0.6, dog.length * 0.8 + dog.height * 0.6 + 0.25);
+  const sc = sun.shadow.camera;
+  sc.left = sc.bottom = -radius;
+  sc.right = sc.top = radius;
+  sc.far = SUN_OFFSET.length() + radius * 2;
+  sc.updateProjectionMatrix();
 
   // ---- Dog play ----
   const play = createDogPlay(scene, ui, videoUVToScreen);
-  play.addDog(dog);
+  const brain = play.attach(dog, anchor, FLOOR_Y);
+  brain.placeAt(new THREE.Vector3(0, FLOOR_Y, -DOG_DISTANCE), camera.position, FLOOR_Y);
+  play.handOcclusion = true; // no depth API in camera mode
   play.ensureDetector();
+  followShadow();
 
   ui.overlay.classList.add("camera-mode");
   ui.overlay.hidden = false;
-  ui.hint.textContent = "Hold the phone still — the dog stays on the screen. Drag to move it.";
+  const name = dogConfigStore.get().name.trim() || "your dog";
+  ui.hint.textContent = `Tap the floor to send ${name} there`;
 
-  // ---- Drag to move the dog on the virtual floor ----
-  const raycaster = new THREE.Raycaster();
-  const pointer = new THREE.Vector2();
-  const hitPoint = new THREE.Vector3();
-  let dragId: number | null = null;
-  const canvas = renderer.domElement;
-  function dragTo(e: PointerEvent) {
+  // ---- Tap the virtual floor → go there ----
+  const onDown = (e: PointerEvent) => {
     const rect = canvas.getBoundingClientRect();
     pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, 1 - ((e.clientY - rect.top) / rect.height) * 2);
     raycaster.setFromCamera(pointer, camera);
-    if (raycaster.ray.intersectPlane(floor, hitPoint)) moveDog(hitPoint.x, hitPoint.z);
-  }
-  const onDown = (e: PointerEvent) => {
-    if (dragId !== null) return;
-    dragId = e.pointerId;
-    canvas.setPointerCapture?.(e.pointerId);
-    dragTo(e);
-  };
-  const onMove = (e: PointerEvent) => {
-    if (e.pointerId === dragId) dragTo(e);
-  };
-  const onUp = (e: PointerEvent) => {
-    if (e.pointerId === dragId) dragId = null;
+    if (!raycaster.ray.intersectPlane(floor, hitPoint)) return;
+    // Keep it in a sensible range in front of the camera.
+    const dist = Math.hypot(hitPoint.x, hitPoint.z);
+    if (dist < 1e-6) return;
+    const clamped = THREE.MathUtils.clamp(dist, MIN_DISTANCE, MAX_DISTANCE);
+    hitPoint.x *= clamped / dist;
+    hitPoint.z *= clamped / dist;
+    hitPoint.z = Math.min(hitPoint.z, -MIN_DISTANCE * 0.5);
+    hitPoint.y = FLOOR_Y;
+    brain.goTo(hitPoint);
+    marker.position.set(hitPoint.x, FLOOR_Y + 0.003, hitPoint.z);
+    markerAge = 0;
+    marker.visible = true;
+    navigator.vibrate?.(10);
   };
   canvas.addEventListener("pointerdown", onDown);
-  canvas.addEventListener("pointermove", onMove);
-  canvas.addEventListener("pointerup", onUp);
-  canvas.addEventListener("pointercancel", onUp);
 
   // ---- Loop ----
-  const viewerWorld = new THREE.Vector3(); // the phone is the camera at the origin
-  const born = performance.now() / 1000;
-  let last: number | null = null;
-  let lastDetect = -Infinity;
-  let lastVideoTime = -1;
   renderer.setAnimationLoop((time) => {
     const now = time / 1000;
     const dt = last === null ? 0 : Math.min(0.1, Math.max(0, now - last));
     last = now;
 
-    if (
-      play.detectorState === "ready" &&
-      video.readyState >= 2 &&
-      time - lastDetect >= DETECT_INTERVAL_MS &&
-      video.currentTime !== lastVideoTime
-    ) {
-      lastDetect = time;
+    if (video.readyState >= 2 && video.currentTime !== lastVideoTime && play.wantsFrame(time)) {
       lastVideoTime = video.currentTime;
       play.see(video, time, camModel);
     }
 
-    play.update(dt, viewerWorld.copy(camera.position));
-    dog.update(now - born);
+    // The brain's "user": a point on the virtual floor ahead of the camera (see header).
+    camera.getWorldDirection(viewer.forward);
+    flatForward.set(viewer.forward.x, 0, viewer.forward.z).normalize();
+    const ahead = brain.mode === "free" ? USER_AHEAD_FREE : USER_AHEAD_FOLLOW;
+    viewer.position.copy(camera.position).addScaledVector(flatForward, ahead);
+
+    play.update(dt, viewer); // brain, then dog.update(t)
+    followShadow();
+
+    if (marker.visible) {
+      markerAge += dt;
+      const k = markerAge / MARKER_LIFE;
+      if (k >= 1) marker.visible = false;
+      else {
+        marker.scale.setScalar(1 + k * 1.5);
+        markerMat.opacity = 0.9 * (1 - k);
+      }
+    }
     renderer.render(scene, camera);
   });
 
   // ---- Exit ----
-  let ended = false;
   const onResize = () => layout();
   const end = () => {
     if (ended) return;
@@ -238,15 +253,16 @@ export async function startCameraMode(
     document.documentElement.classList.remove("camera-active");
     play.dispose();
     canvas.removeEventListener("pointerdown", onDown);
-    canvas.removeEventListener("pointermove", onMove);
-    canvas.removeEventListener("pointerup", onUp);
-    canvas.removeEventListener("pointercancel", onUp);
     window.removeEventListener("resize", onResize);
     video.removeEventListener("resize", onResize);
     ui.exit.removeEventListener("click", end);
     for (const track of stream.getTracks()) track.removeEventListener("ended", end);
     ui.overlay.hidden = true;
     ui.overlay.classList.remove("camera-mode");
+    scene.remove(anchor);
+    dog.dispose();
+    marker.geometry.dispose();
+    markerMat.dispose();
     sun.shadow.map?.dispose();
     onEnd();
   };

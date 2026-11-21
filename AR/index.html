@@ -12,22 +12,25 @@
 
     <div id="app"></div>
 
-    <!-- Start screen: 3D preview, character picker and the AR entry buttons.
-         Starts in the centered "checking" state until main.ts knows which AR path to use. -->
+    <!-- Start screen: the dog character creator (bottom sheet on phones, side panel on wide
+         screens) over the 3D preview, and the deploy buttons. Starts in the centered
+         "checking" state until main.ts knows which AR path to use. -->
     <div id="home" class="home checking">
-      <h1>AR Dog</h1>
-      <p id="home-text" class="home-text" role="status">Checking AR support…</p>
-      <div id="home-picker" class="picker" role="group" aria-label="Choose a character"></div>
-      <button id="start-ar" class="btn btn-primary" hidden>Start AR</button>
-      <!-- iOS AR Quick Look needs an <a rel="ar"> whose only child is an <img>. -->
-      <a id="quicklook" rel="ar" download="character.usdz" hidden>
-        <img id="quicklook-img" alt="View in AR" />
-      </a>
-      <button id="start-camera" class="btn btn-primary" hidden>Play with the dog (camera)</button>
+      <header class="home-head">
+        <h1>AR Dog</h1>
+        <p id="home-text" class="home-text" role="status">Checking AR support…</p>
+      </header>
+      <div id="creator" class="creator" aria-label="Customise your dog"></div>
+      <div id="home-actions" class="home-actions">
+        <button id="btn-deploy" type="button" class="btn btn-primary" hidden>Deploy</button>
+        <button id="btn-camera" type="button" class="btn" hidden>Camera mode</button>
+        <!-- iOS AR Quick Look needs an <a rel="ar"> whose only child is an <img>. -->
+        <a id="quicklook" rel="ar" download="dog.usdz" hidden><img id="quicklook-img" alt="View in AR" /></a>
+      </div>
     </div>
 
-    <!-- Shown on top of the camera while a WebXR AR session (Android) or camera mode runs.
-         In camera mode it gets the "camera-mode" class, which hides the picker, Undo and Clear. -->
+    <!-- Shown on top of the camera while a WebXR AR session (Android) or camera mode runs
+         (class "camera-mode" in camera mode). -->
     <div id="overlay" class="overlay" hidden>
       <canvas id="vision-canvas" class="vision-canvas" hidden></canvas>
       <div class="hint-wrap">
@@ -35,19 +38,18 @@
         <span id="status" class="status-chip" role="status" hidden></span>
       </div>
       <div id="ar-controls" class="ar-controls">
-        <div class="tricks" role="group" aria-label="Tricks">
-          <button id="btn-trick-rollOver" class="btn btn-trick" disabled>Roll over</button>
-          <button id="btn-trick-jump" class="btn btn-trick" disabled>Jump</button>
-          <button id="btn-trick-spin" class="btn btn-trick" disabled>Spin</button>
+        <div class="ar-row ar-commands" role="group" aria-label="Commands">
+          <button id="cmd-sit" type="button" class="btn btn-cmd" aria-pressed="false">Sit</button>
+          <button id="cmd-lie" type="button" class="btn btn-cmd" aria-pressed="false">Lie down</button>
+          <button id="cmd-come" type="button" class="btn btn-cmd">Come</button>
+          <button id="cmd-mode" type="button" class="btn btn-cmd btn-mode">Follow</button>
         </div>
-        <div class="ar-row">
-          <div id="ar-picker" class="picker picker-compact" role="group" aria-label="Character to place"></div>
-          <button id="btn-vision" class="btn btn-icon" aria-pressed="false" aria-label="Show vision" title="Show what the dog sees">👁</button>
-        </div>
-        <div class="toolbar">
-          <button id="btn-undo" class="btn ar-only" disabled>Undo</button>
-          <button id="btn-clear" class="btn ar-only" disabled>Clear</button>
-          <button id="btn-exit" class="btn">Exit</button>
+        <div class="ar-row ar-tricks" role="group" aria-label="Tricks">
+          <button id="trick-rollOver" type="button" class="btn btn-trick">Roll over</button>
+          <button id="trick-jump" type="button" class="btn btn-trick">Jump</button>
+          <button id="trick-spin" type="button" class="btn btn-trick">Spin</button>
+          <button id="btn-vision" type="button" class="btn btn-small" aria-pressed="false" aria-label="Show vision" title="Show what the dog sees">👁</button>
+          <button id="btn-exit" type="button" class="btn btn-small btn-exit" aria-label="Exit" title="Exit">✕</button>
         </div>
       </div>
     </div>

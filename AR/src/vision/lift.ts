@@ -1,171 +1,454 @@
 import * as THREE from "three";
-import type { CameraModel, Human2D, LiftHints, PerceivedHuman, UV } from "./types";
+import type {
+  CameraModel,
+  Face2D,
+  Hand2D,
+  Observation,
+  PerceivedFace,
+  PerceivedHand,
+  Perception,
+  UV,
+} from "./types";
 
 /*
- * Human2D (image space) → PerceivedHuman (world space). Runs at ~10 Hz, so allocation is fine.
+ * Observation (image space) → Perception (world space). Runs at ~15 Hz; allocation is fine
+ * (~0.1 ms per hand).
  *
- * Person distance (along the ray through the eyes, from the camera):
- *   1. cam.depthAt at the eyes (else shoulder midpoint). depthAt is forward-axis (view -z)
- *      depth, so along-ray distance = depth / (rayDir · cameraForward).
- *   2. Angular size: the angle between the rays through the two outer eye corners vs ≈0.09 m,
- *      else between the shoulder rays vs ≈0.38 m.  distance = (span/2) / tan(angle/2).
- *      The eye span is corrected for head yaw (foreshortening): the face's lateral axis is
- *      estimated as cross(up, gaze) in camera space, and the span seen from the eye ray is
- *      EYE_SPAN · sqrt(1 − (axis·ray)²) (floored at 0.5×). Without that, a head turned 50° away
- *      reads ~1.55× too far.
- *   Measured depth is a 5-tap median (anchor ± 0.01 in u and v) so a single pixel that slipped
- *   past a thin silhouette onto the background can't win; if it still disagrees with the
- *   angular estimate by more than 40 %, the angular estimate is used.
- *   Clamped to 0.3..8 m. With nothing usable, head is null (hands may still be found via
- *   reach targets).
+ * Notation: camera space = x right, y up, z toward the viewer (camera looks down -z).
+ * "Depth" Z = forward distance (view-space -z), "distance" = Euclidean range from the camera.
+ * For an image point with camera-space ray r, its tangent-plane coords are
+ *   x = r.x / -r.z,  y = r.y / -r.z   (so a camera-space point P projects to (P.x/Z, P.y/Z)).
+ *
+ * HANDS
+ * MediaPipe gives 21 metric "world" landmarks w_i around the hand's geometric centre with axes
+ * aligned to the image: x right, y DOWN, z AWAY from the camera. In camera space that offset is
+ *   o_i = (w.x, -w.y, -w.z),  so the landmark sits at P_i = C + o_i, with forward depth Zc + w.z.
+ *
+ * 1. Size-based depth: solve the hand centre C = (Xc, Yc, -Zc) by linear least squares over all
+ *    42 projection equations (exact under full perspective, not just weak perspective):
+ *        x_i (Zc + w.z_i) = Xc + w.x_i   →   x_i·Zc − Xc = w.x_i − x_i·w.z_i
+ *        y_i (Zc + w.z_i) = Yc − w.y_i   →   y_i·Zc − Yc = −w.y_i − y_i·w.z_i
+ *    (3 unknowns, 3x3 normal equations). This is the "translation-only PnP" of a known-shape hand
+ *    and reduces to weak-perspective size matching when w.z is small.
+ * 1b. Pose refinement (refineHandPose): MediaPipe's world-landmark ORIENTATION is a few degrees
+ *    off, which for a hand seen near edge-on changes its projected spread a lot. 6 damped
+ *    Gauss-Newton steps over rotation + centre (6-DoF PnP on the 21 points, prior σ 0.12 rad on
+ *    the rotation correction) fix that: synthetic 4° orientation error at 1 m → palm error
+ *    max 10.9 cm → 1.1 cm (mean 2.0 → 0.2 cm).
+ * 2. Measured depth (cam.depthAt, WebXR cpu depth): median over the wrist + 4 MCPs of
+ *    depthAt − w.z_i + HAND_SURFACE (depth sees the skin, landmarks are joint centres ~1 cm
+ *    inside). Used instead of (1) only when it agrees within 40 %; a hand edge on the
+ *    background/finger gap can easily read the wall behind it.
+ * 2b. Temporal smoothing of the size-based depth against the previous palm (same id, re-expressed
+ *    in the current camera): changes < 12 % are blended (new weight 0.35), larger ones are real
+ *    motion and pass through. Realistic noise at 1 m: worst case 7.1 → 4.8 cm after a few frames.
+ * 3. Placement. Two options were implemented and compared numerically (.scratch tests):
+ *      "rays":  P_i = point on landmark i's own image ray at forward depth Zc + w.z_i.
+ *      "rigid": P_i = C + o_i (the refined MediaPipe shape, rigidly translated).
+ *    Both are exact with perfect data and have the same palm error with noise (≤ 0.01 cm apart).
+ *    "rays" reprojects onto the detected pixels exactly (0 px vs 1.4–3 px for "rigid"), which is
+ *    what the depth-only occluder needs to line up with the real hand; "rigid" keeps bone lengths
+ *    slightly better (2.3 vs 3.1 mm mean error at 1 m). Occlusion alignment wins → "rays".
+ * Clamp: Zc to 0.15..3 m. Accuracy (synthetic, 1 px landmark noise, 4° / 2 mm world-landmark
+ * error, ±5 % hand size): palm mean 0.7 cm @ 0.3 m, 2.4 cm @ 1 m (single frame). Hand-size
+ * variation is irreducible without measured depth: ±5 % size = ±5 cm at 1 m.
+ *
+ * Velocity: palm displacement vs `prev` (same id) / dtSincePrev, exponentially smoothed with the
+ * previous velocity, capped at 4 m/s; zero when unmatched or dt is not in (0, 0.5] s.
+ *
+ * FACES
+ *   1. cam.depthAt at the eyes (5-tap median, ±0.01 uv) as along-ray distance.
+ *   2. Angular size of the outer eye corners vs ≈0.09 m, corrected for head yaw using
+ *      headForwardCamera (the face's lateral axis ≈ cross(up, headForward); the span seen
+ *      along the eye ray is EYE_SPAN · sqrt(1 − (axis·ray)²), floored at 0.5×).
+ *   Measured depth is rejected if > 40 % off the angular estimate. Clamped to 0.3..8 m.
+ *   gaze = gazeCamera rotated into world space.
  */
 
+export type HandPlacement = "rays" | "rigid";
+
 const EYE_SPAN_M = 0.09;
-const SHOULDER_SPAN_M = 0.38;
-const MIN_DIST = 0.3;
-const MAX_DIST = 8;
-const HAND_DEPTH_TOLERANCE = 1.2;
-const REACH_SLACK = 0.25;
-const REACH_DEPTH_TOLERANCE = 1.0;
+const FACE_MIN_DIST = 0.3;
+const FACE_MAX_DIST = 8;
+const HAND_MIN_DEPTH = 0.15;
+const HAND_MAX_DEPTH = 3;
+const HAND_SURFACE = 0.01;
+const NEAR_CAMERA = 0.45;
 const DEPTH_AGREEMENT = 0.4;
 const DEPTH_TAP = 0.01;
 const MIN_FORESHORTEN = 0.5;
+const VEL_SMOOTH = 0.5; // weight of the new velocity sample
+const VEL_MAX = 4;
+const VEL_MAX_DT = 0.5;
+/** Prior σ of MediaPipe's world-landmark orientation error (rad) vs tangent-plane residual σ. */
+const ROT_SIGMA = 0.12;
+const RESID_SIGMA = 0.004;
+/** Weight of the new size-based depth sample, and the relative band in which it is smoothed. */
+const DEPTH_SMOOTH = 0.35;
+const DEPTH_SMOOTH_BAND = 0.12;
+const PALM_IDX = [0, 5, 9, 13, 17] as const;
+const DEPTH_IDX = [0, 5, 9, 13, 17] as const;
 
-export function liftHumans(humans: readonly Human2D[], cam: CameraModel, hints: LiftHints): PerceivedHuman[] {
-  const forward = new THREE.Vector3(0, 0, -1).transformDirection(cam.cameraToWorld);
+export function liftObservation(
+  obs: Observation,
+  cam: CameraModel,
+  prev: Perception | null,
+  dtSincePrev: number,
+  placement: HandPlacement = "rays",
+  refine = true,
+): Perception {
+  const ctx = makeCtx(cam);
+  const hands: PerceivedHand[] = [];
+  for (const h of obs.hands) {
+    const before = prev?.hands.find((q) => q.id === h.id);
+    const recent = before && dtSincePrev > 0 && dtSincePrev <= VEL_MAX_DT ? before : undefined;
+    const p = liftHand(h, ctx, placement, refine, recent?.palm);
+    if (!p) continue;
+    // Velocity from the previous perception (matched by id).
+    if (before && dtSincePrev > 0 && dtSincePrev <= VEL_MAX_DT) {
+      const raw = p.palm.clone().sub(before.palm).divideScalar(dtSincePrev);
+      p.velocity.copy(before.velocity).lerp(raw, VEL_SMOOTH);
+      if (p.velocity.length() > VEL_MAX) p.velocity.setLength(VEL_MAX);
+    }
+    hands.push(p);
+  }
+  const faces: PerceivedFace[] = [];
+  for (const f of obs.faces) {
+    const p = liftFace(f, ctx);
+    if (p) faces.push(p);
+  }
+  return { hands, faces };
+}
+
+// ---------------------------------------------------------------------------------------------
+
+export interface Ctx {
+  cam: CameraModel;
+  origin: THREE.Vector3;
+  forward: THREE.Vector3;
+  worldToCamera: THREE.Matrix4;
+  /** Upper 3x3 of cameraToWorld (rotation, no normalisation of the vector). */
+  rot: THREE.Matrix3;
+  /** World-space unit ray through (u, v) (also refreshes origin). */
+  ray(p: UV, out?: THREE.Vector3): THREE.Vector3;
+  /** Camera-space unit ray through (u, v). */
+  camRay(p: UV, out?: THREE.Vector3): THREE.Vector3;
+}
+
+/** Exported for tests. */
+export function makeCtx(cam: CameraModel): Ctx {
   const origin = new THREE.Vector3();
-  const out: PerceivedHuman[] = [];
-
-  const rayDir = (p: UV): THREE.Vector3 => {
-    const o = new THREE.Vector3();
-    const d = new THREE.Vector3();
-    cam.ray(p.u, p.v, o, d);
-    origin.copy(o);
-    return d.normalize();
+  const forward = new THREE.Vector3(0, 0, -1).transformDirection(cam.cameraToWorld);
+  const worldToCamera = new THREE.Matrix4().copy(cam.cameraToWorld).invert();
+  const ctx: Ctx = {
+    cam,
+    origin,
+    forward,
+    worldToCamera,
+    rot: new THREE.Matrix3().setFromMatrix4(cam.cameraToWorld),
+    ray(p, out = new THREE.Vector3()) {
+      cam.ray(p.u, p.v, origin, out);
+      return out.normalize();
+    },
+    camRay(p, out = new THREE.Vector3()) {
+      return ctx.ray(p, out).transformDirection(worldToCamera);
+    },
   };
+  return ctx;
+}
 
-  /** depthAt converted to along-ray distance, or null. */
-  const rayDepth = (p: UV): number | null => {
-    if (!cam.depthAt) return null;
-    const z = cam.depthAt(p.u, p.v);
-    if (z == null || !Number.isFinite(z) || z <= 0) return null;
-    const cos = rayDir(p).dot(forward);
-    if (!(cos > 0.05)) return null;
-    return z / cos;
+/** Forward depth (view −z) from cam.depthAt, or null. */
+function depthAt(ctx: Ctx, u: number, v: number): number | null {
+  if (!ctx.cam.depthAt || !(u >= 0 && u <= 1 && v >= 0 && v <= 1)) return null;
+  const z = ctx.cam.depthAt(u, v);
+  return z != null && Number.isFinite(z) && z > 0 ? z : null;
+}
+
+function median(vals: number[]): number | null {
+  if (vals.length === 0) return null;
+  vals.sort((a, b) => a - b);
+  const m = vals.length >> 1;
+  return vals.length % 2 ? vals[m] : (vals[m - 1] + vals[m]) / 2;
+}
+
+/**
+ * Hand centre in camera space from image rays + metric landmarks (see header, step 1).
+ * Returns null when degenerate. Exported for tests.
+ */
+export function solveHandCenter(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+  world: readonly { x: number; y: number; z: number }[],
+): { X: number; Y: number; Z: number } | null {
+  // Unknowns q = (Xc, Yc, Zc). Rows: [-1, 0, x_i]·q = w.x − x·w.z ; [0, -1, y_i]·q = −w.y − y·w.z
+  let a00 = 0, a02 = 0, a11 = 0, a12 = 0, a22 = 0;
+  let b0 = 0, b1 = 0, b2 = 0;
+  const n = world.length;
+  for (let i = 0; i < n; i++) {
+    const x = xs[i], y = ys[i], w = world[i];
+    const rx = w.x - x * w.z;
+    const ry = -w.y - y * w.z;
+    a00 += 1; a02 += -x; a22 += x * x; b0 += -rx; b2 += x * rx;
+    a11 += 1; a12 += -y; a22 += y * y; b1 += -ry; b2 += y * ry;
+  }
+  // Symmetric [[a00,0,a02],[0,a11,a12],[a02,a12,a22]]; eliminate X and Y.
+  const s = a22 - (a02 * a02) / a00 - (a12 * a12) / a11;
+  if (!(Math.abs(s) > 1e-12)) return null;
+  const Z = (b2 - (a02 * b0) / a00 - (a12 * b1) / a11) / s;
+  const X = (b0 - a02 * Z) / a00;
+  const Y = (b1 - a12 * Z) / a11;
+  if (!Number.isFinite(Z) || !(Z > 0)) return null;
+  return { X, Y, Z };
+}
+
+/**
+ * Full-perspective pose refinement (translation-only solve → 6-DoF PnP). MediaPipe's world
+ * landmarks have a few degrees of orientation error; for a hand seen near edge-on that changes
+ * the projected spread a lot and so the size-based depth (4° error → up to 11 cm at 1 m).
+ * A few damped Gauss-Newton steps over (rotation ω, centre C) minimise the reprojection error
+ * of R·o_i + C in tangent-plane units, with a Gaussian prior keeping ω near 0 (σ ≈ ROT_SIGMA).
+ * Returns the rotated offsets (back in MediaPipe convention) + the refined centre.
+ * Exported for tests.
+ */
+export function refineHandPose(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+  world: readonly { x: number; y: number; z: number }[],
+  init: { X: number; Y: number; Z: number },
+  iterations = 6,
+): { world: { x: number; y: number; z: number }[]; X: number; Y: number; Z: number } {
+  const n = world.length;
+  const R = new THREE.Matrix3(); // identity
+  const dR = new THREE.Matrix3();
+  const q = new THREE.Quaternion();
+  const axis = new THREE.Vector3();
+  const m4 = new THREE.Matrix4();
+  // camera-space offsets o_i = (w.x, -w.y, -w.z)
+  const o = world.map((w) => new THREE.Vector3(w.x, -w.y, -w.z));
+  const qv = new THREE.Vector3();
+  let C = new THREE.Vector3(init.X, init.Y, -init.Z);
+  const omega = new THREE.Vector3(); // accumulated rotation (small-angle), for the prior
+  const lambdaPrior = (RESID_SIGMA / ROT_SIGMA) ** 2;
+  const A = new Float64Array(36);
+  const b = new Float64Array(6);
+  const J = new Float64Array(12); // 2 rows x 6
+  for (let it = 0; it < iterations; it++) {
+    A.fill(0); b.fill(0);
+    for (let i = 0; i < n; i++) {
+      qv.copy(o[i]).applyMatrix3(R);
+      const Px = qv.x + C.x, Py = qv.y + C.y, Pz = qv.z + C.z;
+      const D = -Pz;
+      if (!(D > 0.02)) continue;
+      const rx = Px / D - xs[i];
+      const ry = Py / D - ys[i];
+      // d(x,y)/dP
+      const ax0 = 1 / D, ax2 = Px / (D * D);
+      const ay1 = 1 / D, ay2 = Py / (D * D);
+      // dP/dω = -[q]x = [[0, q.z, -q.y], [-q.z, 0, q.x], [q.y, -q.x, 0]]
+      // row x: ax0 * row0 + ax2 * row2
+      J[0] = ax2 * qv.y; J[1] = ax0 * qv.z - ax2 * qv.x; J[2] = -ax0 * qv.y;
+      J[3] = ax0; J[4] = 0; J[5] = ax2;
+      // row y: ay1 * row1 + ay2 * row2
+      J[6] = -ay1 * qv.z + ay2 * qv.y; J[7] = -ay2 * qv.x; J[8] = ay1 * qv.x;
+      J[9] = 0; J[10] = ay1; J[11] = ay2;
+      for (let r = 0; r < 6; r++) {
+        b[r] -= J[r] * rx + J[6 + r] * ry;
+        for (let c2 = 0; c2 < 6; c2++) A[r * 6 + c2] += J[r] * J[c2] + J[6 + r] * J[6 + c2];
+      }
+    }
+    // Prior on the accumulated rotation: λ|ω + δ|²
+    for (let r = 0; r < 3; r++) {
+      A[r * 6 + r] += lambdaPrior;
+      b[r] -= lambdaPrior * omega.getComponent(r);
+    }
+    for (let r = 0; r < 6; r++) A[r * 6 + r] += 1e-9;
+    const d = solve6(A, b);
+    if (!d) break;
+    axis.set(d[0], d[1], d[2]);
+    const ang = axis.length();
+    if (ang > 1e-12) {
+      // cap a single step at ~10°
+      const a2 = Math.min(ang, 0.18);
+      q.setFromAxisAngle(axis.divideScalar(ang), a2);
+      dR.setFromMatrix4(m4.makeRotationFromQuaternion(q));
+      R.premultiply(dR);
+      omega.add(axis.multiplyScalar(a2));
+    }
+    C = C.add(new THREE.Vector3(d[3], d[4], d[5]));
+    if (!(-C.z > 0.05)) return { world: [...world], ...init }; // diverged: keep the linear solve
+    if (ang < 1e-6 && Math.hypot(d[3], d[4], d[5]) < 1e-6) break;
+  }
+  const out = o.map((v) => {
+    v.applyMatrix3(R);
+    return { x: v.x, y: -v.y, z: -v.z };
+  });
+  return { world: out, X: C.x, Y: C.y, Z: -C.z };
+}
+
+/** Gaussian elimination with partial pivoting on a 6x6 system (A, b are overwritten). */
+function solve6(A: Float64Array, b: Float64Array): number[] | null {
+  const N = 6;
+  for (let col = 0; col < N; col++) {
+    let piv = col;
+    for (let r = col + 1; r < N; r++) if (Math.abs(A[r * N + col]) > Math.abs(A[piv * N + col])) piv = r;
+    if (Math.abs(A[piv * N + col]) < 1e-18) return null;
+    if (piv !== col) {
+      for (let c = 0; c < N; c++) { const t = A[col * N + c]; A[col * N + c] = A[piv * N + c]; A[piv * N + c] = t; }
+      const t = b[col]; b[col] = b[piv]; b[piv] = t;
+    }
+    for (let r = col + 1; r < N; r++) {
+      const f = A[r * N + col] / A[col * N + col];
+      if (f === 0) continue;
+      for (let c = col; c < N; c++) A[r * N + c] -= f * A[col * N + c];
+      b[r] -= f * b[col];
+    }
+  }
+  const x = new Array<number>(N).fill(0);
+  for (let r = N - 1; r >= 0; r--) {
+    let s = b[r];
+    for (let c = r + 1; c < N; c++) s -= A[r * N + c] * x[c];
+    x[r] = s / A[r * N + r];
+    if (!Number.isFinite(x[r])) return null;
+  }
+  return x;
+}
+
+/** Exported for tests. */
+export function liftHand(
+  h: Hand2D,
+  ctx: Ctx,
+  placement: HandPlacement = "rays",
+  refine = true,
+  prevPalm?: THREE.Vector3,
+): PerceivedHand | null {
+  const n = h.landmarks.length;
+  if (n < 21 || h.world.length < 21) return null;
+
+  // Camera-space rays + tangent-plane coords for every landmark.
+  const rays: THREE.Vector3[] = new Array(n);
+  const xs = new Float64Array(n);
+  const ys = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = ctx.camRay(h.landmarks[i]);
+    if (!(r.z < -1e-3)) return null; // behind / at 90° to the camera: invalid
+    rays[i] = r;
+    xs[i] = r.x / -r.z;
+    ys[i] = r.y / -r.z;
+  }
+  const lin = solveHandCenter(xs, ys, h.world);
+  const refined = lin && refine ? refineHandPose(xs, ys, h.world, lin) : null;
+  const c = refined ?? lin;
+  const world = refined ? refined.world : h.world;
+  let Zc = c ? c.Z : null;
+
+  // Measured depth, sanity-checked against the size-based estimate.
+  if (ctx.cam.depthAt) {
+    const vals: number[] = [];
+    for (const i of DEPTH_IDX) {
+      const lm = h.landmarks[i];
+      const z = depthAt(ctx, lm.u, lm.v);
+      if (z != null) vals.push(z - world[i].z + HAND_SURFACE);
+    }
+    const measured = median(vals);
+    if (measured != null && (Zc == null || Math.abs(measured - Zc) / Zc <= DEPTH_AGREEMENT)) {
+      Zc = measured;
+      prevPalm = undefined; // measured depth needs no smoothing
+    }
+  }
+  if (Zc == null) return null;
+  // Temporal smoothing of the size-based depth (per-frame landmark noise → depth jitter). The
+  // palm's forward depth is Zc + mean(w.z over palm points); compare with the previous palm
+  // re-expressed in the current camera. Small changes are blended, large ones (real motion)
+  // pass through untouched.
+  if (prevPalm) {
+    let palmDz = 0;
+    for (const i of PALM_IDX) palmDz += world[i].z;
+    palmDz /= PALM_IDX.length;
+    const now = Zc + palmDz;
+    const before = new THREE.Vector3().subVectors(prevPalm, ctx.origin).dot(ctx.forward);
+    if (before > 0 && Math.abs(now - before) < DEPTH_SMOOTH_BAND * now) {
+      Zc += (before + (now - before) * DEPTH_SMOOTH) - now;
+    }
+  }
+  Zc = THREE.MathUtils.clamp(Zc, HAND_MIN_DEPTH, HAND_MAX_DEPTH);
+
+  // Camera-space landmark positions.
+  const pts: THREE.Vector3[] = new Array(n);
+  if (placement === "rigid" && c) {
+    // Recentre X/Y for the (possibly measured/clamped) depth: keep the solved image position.
+    const k = Zc / c.Z;
+    for (let i = 0; i < n; i++) {
+      const w = world[i];
+      pts[i] = new THREE.Vector3(c.X * k + w.x, c.Y * k - w.y, -(Zc + w.z));
+    }
+  } else {
+    for (let i = 0; i < n; i++) {
+      const z = Math.max(0.05, Zc + world[i].z);
+      pts[i] = rays[i].clone().multiplyScalar(z / -rays[i].z);
+    }
+  }
+
+  // → world space.
+  const origin = ctx.origin; // refreshed by camRay()
+  const points = pts.map((p) => p.applyMatrix3(ctx.rot).add(origin));
+  const palm = new THREE.Vector3();
+  for (const i of PALM_IDX) palm.add(points[i]);
+  palm.divideScalar(PALM_IDX.length);
+  const distance = palm.distanceTo(origin);
+  return {
+    id: h.id,
+    confidence: h.score,
+    palm,
+    points,
+    velocity: new THREE.Vector3(),
+    distance,
+    nearCamera: distance < NEAR_CAMERA,
+    age: 0,
   };
+}
 
-  /** Median of rayDepth over the anchor and four neighbours (± DEPTH_TAP in u and v). */
-  const medianRayDepth = (p: UV): number | null => {
-    if (!cam.depthAt) return null;
+function liftFace(f: Face2D, ctx: Ctx): PerceivedFace | null {
+  const UP = new THREE.Vector3(0, 1, 0);
+  // Angular distance from the eye-corner span, yaw-corrected with the head pose.
+  const ra = ctx.ray(f.leftEyeOuter);
+  const rb = ctx.ray(f.rightEyeOuter);
+  const angle = ra.angleTo(rb);
+  let span = EYE_SPAN_M;
+  const hf = new THREE.Vector3(f.headForwardCamera.x, f.headForwardCamera.y, f.headForwardCamera.z);
+  if (hf.lengthSq() > 1e-12) {
+    const lateral = new THREE.Vector3().crossVectors(UP, hf.normalize());
+    if (lateral.lengthSq() > 1e-6) {
+      lateral.normalize();
+      const mid: UV = { u: (f.leftEyeOuter.u + f.rightEyeOuter.u) / 2, v: (f.leftEyeOuter.v + f.rightEyeOuter.v) / 2 };
+      const cr = ctx.camRay(mid);
+      const cdot = lateral.dot(cr);
+      span = EYE_SPAN_M * Math.max(MIN_FORESHORTEN, Math.sqrt(Math.max(0, 1 - cdot * cdot)));
+    }
+  }
+  const angular = angle > 1e-4 ? span / 2 / Math.tan(angle / 2) : null;
+
+  // Measured along-ray distance at the eyes (5-tap median).
+  const eyeRay = ctx.ray(f.eyes);
+  const cos = eyeRay.dot(ctx.forward);
+  let dist: number | null = null;
+  if (ctx.cam.depthAt && cos > 0.05) {
     const vals: number[] = [];
     const taps: [number, number][] = [[0, 0], [DEPTH_TAP, 0], [-DEPTH_TAP, 0], [0, DEPTH_TAP], [0, -DEPTH_TAP]];
     for (const [du, dv] of taps) {
-      const u = p.u + du;
-      const v = p.v + dv;
-      if (u < 0 || u > 1 || v < 0 || v > 1) continue;
-      const z = rayDepth({ u, v });
-      if (z != null) vals.push(z);
+      const z = depthAt(ctx, f.eyes.u + du, f.eyes.v + dv);
+      if (z != null) vals.push(z / cos);
     }
-    if (vals.length === 0) return null;
-    vals.sort((a, b) => a - b);
-    const m = vals.length >> 1;
-    return vals.length % 2 ? vals[m] : (vals[m - 1] + vals[m]) / 2;
-  };
-
-  const angularDistance = (a: UV, b: UV, span: number): number | null => {
-    const da = rayDir(a);
-    const db = rayDir(b);
-    const angle = da.angleTo(db);
-    if (!(angle > 1e-4)) return null;
-    return span / 2 / Math.tan(angle / 2);
-  };
-
-  const worldToCamera = new THREE.Matrix4().copy(cam.cameraToWorld).invert();
-  const UP = new THREE.Vector3(0, 1, 0);
-
-  /** Eye-corner span as seen from the camera, shrunk by the head's yaw relative to the eye ray. */
-  const effectiveEyeSpan = (face: NonNullable<Human2D["face"]>): number => {
-    const g = new THREE.Vector3(face.gazeCamera.x, face.gazeCamera.y, face.gazeCamera.z);
-    if (g.lengthSq() < 1e-12) return EYE_SPAN_M;
-    const lateral = new THREE.Vector3().crossVectors(UP, g.normalize());
-    if (lateral.lengthSq() < 1e-6) return EYE_SPAN_M; // looking straight up/down: no yaw info
-    lateral.normalize();
-    const mid: UV = { u: (face.leftEyeOuter.u + face.rightEyeOuter.u) / 2, v: (face.leftEyeOuter.v + face.rightEyeOuter.v) / 2 };
-    const r = rayDir(mid).transformDirection(worldToCamera); // camera-space unit ray
-    const c = lateral.dot(r);
-    return EYE_SPAN_M * Math.max(MIN_FORESHORTEN, Math.sqrt(Math.max(0, 1 - c * c)));
-  };
-
-  for (const h of humans) {
-    // --- person distance (along the eye ray, or shoulder-midpoint ray when no eyes) ---
-    const anchor: UV | null = h.eyes
-      ?? (h.shoulders ? { u: (h.shoulders.left.u + h.shoulders.right.u) / 2, v: (h.shoulders.left.v + h.shoulders.right.v) / 2 } : null);
-
-    let angular: number | null = null;
-    if (h.face) angular = angularDistance(h.face.leftEyeOuter, h.face.rightEyeOuter, effectiveEyeSpan(h.face));
-    if (angular == null && h.shoulders) angular = angularDistance(h.shoulders.left, h.shoulders.right, SHOULDER_SPAN_M);
-    let dist: number | null = anchor ? medianRayDepth(anchor) : null;
-    if (dist != null && angular != null && Math.abs(dist - angular) / angular > DEPTH_AGREEMENT) dist = angular;
-    if (dist == null) dist = angular;
-    if (dist != null) dist = THREE.MathUtils.clamp(dist, MIN_DIST, MAX_DIST);
-
-    // --- head ---
-    let head: THREE.Vector3 | null = null;
-    if (h.eyes && dist != null) {
-      const d = rayDir(h.eyes);
-      head = origin.clone().addScaledVector(d, dist);
-    }
-
-    // --- gaze ---
-    let gaze: THREE.Vector3 | null = null;
-    if (h.face) {
-      const g = h.face.gazeCamera;
-      const v = new THREE.Vector3(g.x, g.y, g.z);
-      if (v.lengthSq() > 1e-12) gaze = v.transformDirection(cam.cameraToWorld); // normalises
-    }
-
-    // --- hands ---
-    const hands: THREE.Vector3[] = [];
-    for (const hp of h.hands) {
-      const p = liftHand(hp, dist);
-      if (p) hands.push(p);
-    }
-
-    if (!head && !gaze && hands.length === 0) continue;
-    out.push({ id: h.id, confidence: h.score, head, gaze, hands, age: 0 });
+    dist = median(vals);
   }
-  return out;
+  if (dist != null && angular != null && Math.abs(dist - angular) / angular > DEPTH_AGREEMENT) dist = angular;
+  if (dist == null) dist = angular;
+  if (dist == null) return null;
+  dist = THREE.MathUtils.clamp(dist, FACE_MIN_DIST, FACE_MAX_DIST);
 
-  function liftHand(hp: UV, personDist: number | null): THREE.Vector3 | null {
-    // 1. Measured depth, sanity-checked against the person's own distance.
-    const hd = rayDepth(hp);
-    if (hd != null && (personDist == null || Math.abs(hd - personDist) <= HAND_DEPTH_TOLERANCE)) {
-      const d = rayDir(hp);
-      return origin.clone().addScaledVector(d, hd);
-    }
-
-    // 2. Reach-target snapping: closest point on the hand ray to each sphere centre.
-    const d = rayDir(hp);
-    const o = origin.clone();
-    let best: THREE.Vector3 | null = null;
-    let bestScore = Infinity;
-    for (const s of hints.reachTargets) {
-      const t = Math.max(0, s.center.clone().sub(o).dot(d));
-      const p = o.clone().addScaledVector(d, t);
-      const miss = p.distanceTo(s.center);
-      if (miss > s.radius + REACH_SLACK) continue;
-      if (personDist != null && Math.abs(t - personDist) > REACH_DEPTH_TOLERANCE) continue;
-      const score = miss - s.radius;
-      if (score < bestScore) {
-        bestScore = score;
-        best = p;
-      }
-    }
-    if (best) return best;
-
-    // 3. Fallback: at the person's own depth (the brain still checks zone distances, so a hand
-    //    placed at the body's depth won't pet a dog that's nearer the camera).
-    if (personDist != null) return o.addScaledVector(d, personDist);
-    return null;
-  }
+  ctx.ray(f.eyes, eyeRay); // refresh origin
+  const head = ctx.origin.clone().addScaledVector(eyeRay, dist);
+  const g = new THREE.Vector3(f.gazeCamera.x, f.gazeCamera.y, f.gazeCamera.z);
+  if (g.lengthSq() < 1e-12) return null;
+  const gaze = g.transformDirection(ctx.cam.cameraToWorld); // normalises
+  return { id: f.id, confidence: f.score, head, gaze, age: 0 };
 }

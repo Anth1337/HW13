@@ -1,0 +1,352 @@
+import { BREEDS, breedPreset, configForBreed, dogConfigStore, randomDogConfig } from "./dog/config";
+import type { CoatPattern, DogConfig, EarStyle, Sex, TailStyle } from "./dog/types";
+
+/*
+ * The dog character creator: fills #creator with labelled controls bound to dogConfigStore.
+ * Discrete choices (breed, sex, chips, toggles) commit at once; slider / colour drags and name
+ * typing are debounced (~80 ms) so the preview isn't rebuilt on every input event.
+ */
+
+const DEBOUNCE_MS = 80;
+
+const PATTERNS: { value: CoatPattern; label: string }[] = [
+  { value: "solid", label: "Solid" },
+  { value: "twoTone", label: "Two-tone" },
+  { value: "saddle", label: "Saddle" },
+  { value: "spots", label: "Spots" },
+  { value: "mask", label: "Mask" },
+  { value: "patches", label: "Patches" },
+];
+const EARS: { value: EarStyle; label: string }[] = [
+  { value: "floppy", label: "Floppy" },
+  { value: "pointy", label: "Pointy" },
+  { value: "folded", label: "Folded" },
+  { value: "long", label: "Long" },
+];
+const TAILS: { value: TailStyle; label: string }[] = [
+  { value: "otter", label: "Otter" },
+  { value: "curled", label: "Curled" },
+  { value: "stub", label: "Stub" },
+  { value: "plume", label: "Plume" },
+  { value: "whip", label: "Whip" },
+];
+const SEXES: { value: Sex; label: string }[] = [
+  { value: "female", label: "♀ Female" },
+  { value: "male", label: "♂ Male" },
+];
+
+let uid = 0;
+const nextId = (base: string) => `cr-${base}-${++uid}`;
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  props: Partial<Record<string, string>> = {},
+  children: (Node | string)[] = [],
+): HTMLElementTagNameMap[K] {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (v === undefined) continue;
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else node.setAttribute(k, v);
+  }
+  for (const c of children) node.append(c);
+  return node;
+}
+
+/** Three-word description of a 0..1 slider value. */
+const words = (lo: string, mid: string, hi: string) => (v: number) => (v < 0.34 ? lo : v > 0.66 ? hi : mid);
+
+export function mountCreator(container: HTMLElement): { destroy(): void } {
+  /** The latest config, including edits not yet committed to the store. */
+  let draft: DogConfig = dogConfigStore.get();
+  let timer: number | undefined;
+  const syncers: ((c: DogConfig) => void)[] = [];
+
+  const commitNow = () => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+    dogConfigStore.set(draft);
+  };
+  const commitSoon = () => {
+    if (timer !== undefined) clearTimeout(timer);
+    timer = window.setTimeout(commitNow, DEBOUNCE_MS);
+  };
+  /** Apply an edit to a copy of the draft (configs from the store are never mutated). */
+  const edit = (fn: (c: DogConfig) => void, debounce: boolean) => {
+    const next = structuredClone(draft);
+    fn(next);
+    draft = next;
+    if (debounce) commitSoon();
+    else commitNow();
+  };
+
+  const root = el("div", { class: "creator-inner" });
+
+  /* ---- Top bar: name + dice ---- */
+  const nameId = nextId("name");
+  const nameInput = el("input", {
+    id: nameId,
+    class: "cr-name",
+    type: "text",
+    maxlength: "20",
+    autocomplete: "off",
+    spellcheck: "false",
+    enterkeyhint: "done",
+  });
+  nameInput.addEventListener("input", () => edit((c) => (c.name = nameInput.value), true));
+  nameInput.addEventListener("change", commitNow);
+  nameInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") nameInput.blur();
+  });
+  syncers.push((c) => {
+    if (document.activeElement !== nameInput && nameInput.value !== c.name) nameInput.value = c.name;
+  });
+
+  const diceIcon = el("span", { class: "dice-icon", "aria-hidden": "true", text: "🎲" });
+  const dice = el("button", { type: "button", class: "cr-dice", title: "Random dog" }, [diceIcon, el("span", { text: "Randomize" })]);
+  dice.addEventListener("click", () => {
+    diceIcon.classList.remove("rolling");
+    void diceIcon.offsetWidth; // restart the animation on quick repeated taps
+    diceIcon.classList.add("rolling");
+    draft = randomDogConfig();
+    commitNow();
+  });
+  diceIcon.addEventListener("animationend", () => diceIcon.classList.remove("rolling"));
+
+  root.append(
+    el("div", { class: "cr-top" }, [
+      el("div", { class: "cr-name-wrap" }, [el("label", { for: nameId, class: "cr-label", text: "Name" }), nameInput]),
+      dice,
+    ]),
+  );
+
+  /* ---- Building blocks ---- */
+  const section = (title: string, ...children: Node[]) => {
+    const id = nextId("sec");
+    const s = el("section", { class: "cr-section", "aria-labelledby": id }, [el("h2", { id, class: "cr-h", text: title })]);
+    s.append(...children);
+    root.append(s);
+    return s;
+  };
+
+  /** A row of toggle buttons (one pressed). */
+  function chips<T extends string>(
+    label: string,
+    options: { value: T; label: string }[],
+    get: (c: DogConfig) => T,
+    set: (c: DogConfig, v: T) => void,
+    opts: { scroll?: boolean; segmented?: boolean; onPick?: (v: T) => void } = {},
+  ) {
+    const id = nextId("chips");
+    const group = el("div", {
+      class: `cr-chips${opts.scroll ? " cr-scroll" : ""}${opts.segmented ? " cr-seg" : ""}`,
+      role: "group",
+      "aria-labelledby": id,
+    });
+    const buttons = options.map((o) => {
+      const b = el("button", { type: "button", class: "cr-chip", "aria-pressed": "false", text: o.label });
+      b.addEventListener("click", () => {
+        if (opts.onPick) opts.onPick(o.value);
+        else edit((c) => set(c, o.value), false);
+      });
+      group.append(b);
+      return { value: o.value, b };
+    });
+    /** Keep the chosen chip in view in a scrolling row (no smooth scroll: it fights quick taps). */
+    const revealPressed = () => {
+      const on = buttons.find(({ b }) => b.getAttribute("aria-pressed") === "true")?.b;
+      if (!on || !on.offsetParent) return; // not laid out yet (e.g. hidden while checking AR)
+      const gl = group.scrollLeft;
+      const left = on.offsetLeft - group.offsetLeft;
+      if (left < gl || left + on.offsetWidth > gl + group.clientWidth) group.scrollLeft = left - 12;
+    };
+    if (opts.scroll) {
+      // The row may first be laid out after mount (the creator is hidden during the checking state).
+      let wasVisible = false;
+      new ResizeObserver(() => {
+        const visible = group.clientWidth > 0;
+        if (visible && !wasVisible) revealPressed();
+        wasVisible = visible;
+      }).observe(group);
+    }
+    syncers.push((c) => {
+      const v = get(c);
+      for (const { value, b } of buttons) b.setAttribute("aria-pressed", String(value === v));
+      if (opts.scroll) revealPressed();
+    });
+    return el("div", { class: "cr-field" }, [el("span", { id, class: "cr-label", text: label }), group]);
+  }
+
+  /** A 0..1 slider with a word/number readout. */
+  function slider(label: string, get: (c: DogConfig) => number, set: (c: DogConfig, v: number) => void, describe: (v: number, c: DogConfig) => string) {
+    const id = nextId("rng");
+    const input = el("input", { id, type: "range", min: "0", max: "1", step: "0.01", class: "cr-range" });
+    const out = el("output", { for: id, class: "cr-out" });
+    input.addEventListener("input", () => {
+      const v = Number(input.value);
+      edit((c) => set(c, v), true);
+      out.textContent = describe(v, draft);
+    });
+    input.addEventListener("change", commitNow);
+    syncers.push((c) => {
+      const v = get(c);
+      if (document.activeElement !== input || Math.abs(Number(input.value) - v) > 0.011) input.value = String(v);
+      out.textContent = describe(v, c);
+    });
+    return el("div", { class: "cr-field cr-slider" }, [
+      el("div", { class: "cr-row" }, [el("label", { for: id, class: "cr-label", text: label }), out]),
+      input,
+    ]);
+  }
+
+  function color(label: string, get: (c: DogConfig) => string, set: (c: DogConfig, v: string) => void) {
+    const id = nextId("col");
+    const input = el("input", { id, type: "color", class: "cr-color" });
+    input.addEventListener("input", () => edit((c) => set(c, input.value), true));
+    input.addEventListener("change", commitNow);
+    syncers.push((c) => {
+      const v = get(c).toLowerCase();
+      if (input.value.toLowerCase() !== v) input.value = v;
+    });
+    return el("label", { for: id, class: "cr-colorfield" }, [input, el("span", { text: label })]);
+  }
+
+  function toggle(label: string, get: (c: DogConfig) => boolean, set: (c: DogConfig, v: boolean) => void) {
+    const b = el("button", { type: "button", role: "switch", class: "cr-switch", "aria-checked": "false" }, [
+      el("span", { class: "cr-switch-track", "aria-hidden": "true" }, [el("span", { class: "cr-switch-knob" })]),
+      el("span", { text: label }),
+    ]);
+    b.addEventListener("click", () => edit((c) => set(c, !get(c)), false));
+    syncers.push((c) => b.setAttribute("aria-checked", String(get(c))));
+    return b;
+  }
+
+  /* ---- Breed ---- */
+  const resetBreed = el("button", { type: "button", class: "cr-link", text: "Reset breed" });
+  resetBreed.addEventListener("click", () => {
+    draft = configForBreed(draft.breed, { name: draft.name, sex: draft.sex });
+    commitNow();
+  });
+  const breedField = chips(
+    "Breed",
+    BREEDS.map((b) => ({ value: b.breed, label: b.label })),
+    (c) => c.breed,
+    () => {},
+    {
+      scroll: true,
+      onPick: (breed) => {
+        if (breed === draft.breed) return;
+        draft = configForBreed(breed, { name: draft.name, sex: draft.sex });
+        commitNow();
+      },
+    },
+  );
+  const breedHead = el("div", { class: "cr-row" }, [el("h2", { class: "cr-h", text: "Breed" }), resetBreed]);
+  const breedSection = el("section", { class: "cr-section", "aria-label": "Breed" }, [breedHead, breedField]);
+  breedField.querySelector(".cr-label")?.classList.add("visually-hidden");
+  root.append(breedSection);
+
+  /* ---- Body ---- */
+  const heightCm = (v: number, c: DogConfig) => {
+    const [lo, hi] = breedPreset(c.breed).heightRange;
+    return `${Math.round((lo + (hi - lo) * v) * 100)} cm`;
+  };
+  section(
+    "Body",
+    chips("Sex", SEXES, (c) => c.sex, (c, v) => (c.sex = v), { segmented: true }),
+    slider("Size", (c) => c.size, (c, v) => (c.size = v), heightCm),
+    slider("Build", (c) => c.build, (c, v) => (c.build = v), words("Slim", "Average", "Stocky")),
+    slider("Leg length", (c) => c.legLength, (c, v) => (c.legLength = v), words("Short", "Average", "Long")),
+  );
+
+  /* ---- Coat ---- */
+  const swatchId = nextId("sw");
+  const swatchRow = el("div", { class: "cr-swatches", role: "group", "aria-labelledby": swatchId });
+  let swatchBreed: string | null = null;
+  const swatchButtons: { b: HTMLButtonElement; primary: string; secondary: string }[] = [];
+  syncers.push((c) => {
+    if (swatchBreed !== c.breed) {
+      swatchBreed = c.breed;
+      swatchRow.replaceChildren();
+      swatchButtons.length = 0;
+      for (const s of breedPreset(c.breed).coatSwatches) {
+        const b = el("button", { type: "button", class: "cr-swatch", title: s.label, "aria-label": s.label, "aria-pressed": "false" }, [
+          el("span", { class: "cr-swatch-a", style: `background:${s.primary}` }),
+          el("span", { class: "cr-swatch-b", style: `background:${s.secondary}` }),
+        ]);
+        b.addEventListener("click", () =>
+          edit((cc) => {
+            cc.coat.primary = s.primary;
+            cc.coat.secondary = s.secondary;
+          }, false),
+        );
+        swatchRow.append(b);
+        swatchButtons.push({ b, primary: s.primary.toLowerCase(), secondary: s.secondary.toLowerCase() });
+      }
+    }
+    for (const s of swatchButtons) {
+      const on = s.primary === c.coat.primary.toLowerCase() && s.secondary === c.coat.secondary.toLowerCase();
+      s.b.setAttribute("aria-pressed", String(on));
+    }
+  });
+  section(
+    "Coat",
+    el("div", { class: "cr-field" }, [el("span", { id: swatchId, class: "cr-label", text: "Colours for this breed" }), swatchRow]),
+    el("div", { class: "cr-colors" }, [
+      color("Main", (c) => c.coat.primary, (c, v) => (c.coat.primary = v)),
+      color("Markings", (c) => c.coat.secondary, (c, v) => (c.coat.secondary = v)),
+    ]),
+    chips("Pattern", PATTERNS, (c) => c.coat.pattern, (c, v) => (c.coat.pattern = v)),
+    slider("Fluff", (c) => c.coat.fluff, (c, v) => (c.coat.fluff = v), words("Sleek", "Medium", "Fluffy")),
+  );
+
+  /* ---- Face ---- */
+  section(
+    "Face",
+    slider("Snout", (c) => c.face.snoutLength, (c, v) => (c.face.snoutLength = v), words("Flat", "Medium", "Long")),
+    chips("Ears", EARS, (c) => c.face.earStyle, (c, v) => (c.face.earStyle = v)),
+    slider("Eye size", (c) => c.face.eyeSize, (c, v) => (c.face.eyeSize = v), words("Small", "Medium", "Big")),
+    el("div", { class: "cr-colors" }, [
+      color("Eyes", (c) => c.face.eyeColor, (c, v) => (c.face.eyeColor = v)),
+      color("Nose", (c) => c.face.noseColor, (c, v) => (c.face.noseColor = v)),
+    ]),
+    el("div", { class: "cr-toggles" }, [
+      toggle("Brows", (c) => c.face.brows, (c, v) => (c.face.brows = v)),
+      toggle("Tongue out", (c) => c.face.tongueOut, (c, v) => (c.face.tongueOut = v)),
+    ]),
+  );
+
+  /* ---- Tail + collar ---- */
+  section("Tail", chips("Tail style", TAILS, (c) => c.tail, (c, v) => (c.tail = v)));
+  section(
+    "Collar",
+    el("div", { class: "cr-colors" }, [
+      color("Collar", (c) => c.collar.color, (c, v) => (c.collar.color = v)),
+      toggle("Name tag", (c) => c.collar.tag, (c, v) => (c.collar.tag = v)),
+    ]),
+  );
+
+  container.replaceChildren(root);
+
+  const syncAll = (c: DogConfig) => {
+    for (const s of syncers) s(c);
+  };
+  syncAll(draft);
+  const unsubscribe = dogConfigStore.subscribe((c) => {
+    // Changes from elsewhere (or our own commit echoing back). A pending debounced edit is newer.
+    if (timer !== undefined) return;
+    draft = c;
+    syncAll(c);
+  });
+
+  return {
+    destroy() {
+      if (timer !== undefined) commitNow();
+      unsubscribe();
+      container.replaceChildren();
+    },
+  };
+}
