@@ -144,6 +144,8 @@ export async function startCameraMode(
 
   // Everything below runs with the camera open: on any throw, release it all before rethrowing.
   let tracker: WorldTracker | null = null;
+  /** Long-side FOV the projection was last laid out with (the tracker refines it). */
+  let layoutFov = LONG_SIDE_FOV_DEG;
   let playRef: { dispose(): void } | null = null;
   try {
     const permission = await resolveMotion(motion);
@@ -296,10 +298,12 @@ export async function startCameraMode(
 
       // Focal length in video pixels from the assumed lens FOV, then the vertical FOV of the part
       // of the video that is actually on screen after the cover crop.
+      // The tracker measures the real FOV once the phone has turned a bit (it starts from the default).
+      layoutFov = tracker?.fovLongSideDeg ?? LONG_SIDE_FOV_DEG;
       const focal =
         Math.max(vw, vh) /
         2 /
-        Math.tan(THREE.MathUtils.degToRad(LONG_SIDE_FOV_DEG / 2));
+        Math.tan(THREE.MathUtils.degToRad(layoutFov / 2));
       const visibleH = screenH / coverScale;
       const fov = 2 * Math.atan(visibleH / 2 / focal);
       camera.fov = THREE.MathUtils.radToDeg(fov);
@@ -369,11 +373,16 @@ export async function startCameraMode(
       marker.visible = true;
     }
 
-    /** Reads the pose source into the three.js camera. Tracked: tracker pose; fallback: fixed. */
+    /**
+     * Reads the pose source into the three.js camera. Tracked: the pose of the video frame on
+     * screen (getDisplayPose), so the dog stays locked to the image instead of leading it on
+     * every turn; fallback: fixed.
+     */
     function updateCameraPose(time: number): boolean {
       if (!tracked || !tracker) return true;
       tracker.processFrame(video, time);
-      tracker.getPose(pose);
+      if (Math.abs(tracker.fovLongSideDeg - layoutFov) > 0.5) layout(); // measured FOV changed
+      tracker.getDisplayPose(pose);
       const p = pose.position;
       const q = pose.quaternion;
       if (!Number.isFinite(p.x + p.y + p.z + q.x + q.y + q.z + q.w))

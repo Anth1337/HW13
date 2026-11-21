@@ -56,6 +56,16 @@ export interface WorldTracker {
   /** Latest fused pose (rotation extrapolated to now from the gyro; position from the last odometry step). */
   getPose(out: TrackedPose): TrackedPose;
   /**
+   * The pose at the capture time of the video frame currently ON SCREEN (rotation from the gyro
+   * history, position interpolated between odometry samples). Render with this, not getPose: the
+   * displayed image is ~60-150 ms old, and a pose from "now" makes the dog lead the room.
+   */
+  getDisplayPose(out: TrackedPose): TrackedPose;
+  /** Long-side FOV in use (degrees): the configured one until a measured one replaces it. */
+  readonly fovLongSideDeg: number;
+  /** Measured camera latency (ms): how old a frame is when presented. */
+  readonly latencyMs: number;
+  /**
    * The pose at the moment the most recently PROCESSED video frame was captured (for the vision
    * CameraModel). Falls back to getPose when no frame has been processed yet.
    */

@@ -48,6 +48,7 @@ Apple does not give web pages ARKit, so **Deploy** on iOS runs our own tracker (
 
 - **Rotation** from the phone's gyro + gravity (DeviceOrientation / DeviceMotion).
 - **Position** from visual odometry on the **floor plane**: features on the floor are tracked in the (small, rotation-compensated) camera image and solved for metric translation using an **assumed camera height** (about 1.3 m). Accelerometer / zero-velocity damping covers moments with nothing to track.
+- **Video sync:** the camera image on screen is already 60–150 ms old (it varies by phone), while the gyro is current. The tracker measures that delay continuously by matching how far the image shifts against how far the gyro says the phone turned (`src/tracking/videoSync.ts`), and the 3D camera is rendered with the pose of the frame that is actually on screen (`getDisplayPose`), so the pet stays locked to the room when you turn instead of swimming ahead of it. The same measurement gives the odometry the right instant for each frame, which cuts the false drift turning causes. It also measures the lens field of view, which replaces the assumed ~65° only when the stream is clearly different (more than 10% off, e.g. a cropped or zoomed camera). In simulation (a phone looking around at a textured floor, 50–72° lenses, 70–140 ms camera delay) this cut the misalignment while turning from about 20–35 px to about 5 px on a phone screen, and the drift while turning in place by up to half.
 - The dog is placed on the floor plane (tap, as on Android), kept world-anchored, and you tap the floor to send it, long-press to re-place it.
 - Tip shown before Deploy: hold the phone at chest height, point it at the floor and walk slowly.
 
@@ -190,7 +191,7 @@ cloudflared tunnel --url https://localhost:4173 --no-tls-verify
 | `src/dog/fx.ts` | Flat-colour hearts when the dog is petted |
 | `src/webxr.ts` | Android AR session: hit-test reticle, tap to place / send the dog, buttons, camera access + depth for vision |
 | `src/cameraMode.ts` | Without WebXR (iPhone, desktop): live camera video behind the 3D view; world-tracked scan / tap-to-place flow when motion sensors exist, a fixed camera otherwise |
-| `src/tracking/*` | iOS world tracking: `types.ts` (contract), motion permission, gyro / gravity fusion, floor-plane visual odometry with assumed camera height |
+| `src/tracking/*` | iOS world tracking: `types.ts` (contract), motion permission, gyro / gravity fusion, floor-plane visual odometry with assumed camera height, `videoSync.ts` (measures camera delay and field of view so the render pose matches the frame on screen) |
 | `src/dogPlay.ts` | Shared by both modes: the detector, people tracker, brain, voice button and chip, command / trick buttons, status line, vision drawing |
 | `src/vision/detector.ts` | MediaPipe hands / faces / pose and the id tracker (global assignment, velocity prediction) |
 | `src/vision/lift.ts` | Lifts detections into 3D world space (hand, face and body depth) |

@@ -1,6 +1,7 @@
 import type { MotionPermission, TrackedPose, TrackerState, WorldTracker, WorldTrackerOptions } from "./types";
 import { FloorOdometry, GrayFrameGrabber } from "./floorOdometry";
 import { OrientationFilter, type Quat } from "./orientation";
+import { VideoSyncCalibrator } from "./videoSync";
 
 /*
  * WorldTracker for browsers without WebXR (iOS Safari): gyro rotation (orientation.ts) +
@@ -10,12 +11,19 @@ import { OrientationFilter, type Quat } from "./orientation";
  *  - The video frame passed to processFrame is assumed UPRIGHT w.r.t. the screen (what iOS
  *    delivers for the back camera) and `setFov` takes the long-side FOV of the WHOLE video frame
  *    (not the cropped part shown on screen). Default 65 deg.
- *  - Frame timestamps: requestVideoFrameCallback (when the browser has it) tells us when a NEW
- *    frame exists and, if given, its captureTime (performance.now timebase). Otherwise the frame
- *    is assumed to have been captured CAMERA_LATENCY_MS (60 ms, typical for phone cameras) before
- *    the processFrame call. The orientation at that instant is looked up in the history ring.
- *    A wrong latency shows up as spurious translation during fast turns (the odometry has a
- *    gyro-error allowance and freezes position above ~40 deg/s).
+ *  - Frame timestamps: every frame gets a REFERENCE time: when the browser presented it
+ *    (requestVideoFrameCallback's presentationTime, else the callback time) or, without that API,
+ *    when processFrame grabbed it. Its capture time is reference - latency, where the latency is
+ *    MEASURED continuously (videoSync.ts: image shift vs gyro rotation) starting from
+ *    CAMERA_LATENCY_MS (or the browser's captureTime when it reports a plausible one). The
+ *    orientation at the capture instant is looked up in the history ring. A wrong latency shows
+ *    up as spurious translation during turns and as the dog swimming against the video.
+ *  - Display sync: the video element shows a frame that is already `latency` old. getDisplayPose
+ *    returns the pose AT THAT FRAME's capture time (rotation from the gyro history, position
+ *    interpolated between filtered odometry samples), so virtual content and the image agree on
+ *    every turn instead of the dog leading the room. This is how ARKit / ARCore render too.
+ *  - The FOV (setFov / WorldTrackerOptions) is a starting value; the measured focal length
+ *    replaces it once there has been enough rotation (fovLongSideDeg reports the current value).
  *  - Camera height is the constructor value; no estimation (see README note): an error in it is
  *    a proportional error in all distances.
  *  - Position when nothing can be tracked is HELD (no accelerometer integration: double
@@ -24,10 +32,15 @@ import { OrientationFilter, type Quat } from "./orientation";
  *    permission denied). It can leave that state if events start arriving later.
  */
 
-const CAMERA_LATENCY_MS = 60;
+const CAMERA_LATENCY_MS = 80; // starting guess until measured (phones: ~60-150 ms)
 const NO_SENSOR_MS = 1500;
-const MIN_INTERVAL_MS = 40; // <= 25 Hz
+const MIN_INTERVAL_MS = 30; // <= 33 Hz: every frame of a 30 fps camera when the work is cheap
 const MAX_INTERVAL_MS = 120;
+const POS_RING = 64;
+/** Relative FOV disagreement before the measured FOV replaces the configured one. */
+const FOV_OVERRIDE = 0.1;
+/** Longest the display pose extrapolates position past the newest odometry sample. */
+const MAX_POS_EXTRAPOLATION_MS = 80;
 
 export interface TrackerEnv {
   /** Event target for deviceorientation / devicemotion / orientationchange (default: window). */
@@ -133,6 +146,8 @@ class WorldTrackerImpl implements WorldTracker {
   private _quality = 0;
   private readonly h: number;
   private fovDeg: number;
+  /** FOV from the options / setFov: the measured one only overrides it when clearly different. */
+  private configuredFov: number;
 
   private readonly ori = new OrientationFilter();
   private odo: FloorOdometry | null = null;
@@ -162,6 +177,20 @@ class WorldTrackerImpl implements WorldTracker {
   private readonly framePos = { x: 0, y: 0, z: 0 };
   private readonly frameQ: Quat = { x: 0, y: 0, z: 0, w: 1 };
 
+  // Video sync: measured latency + focal length, presentation time of the frame on screen.
+  private readonly sync: VideoSyncCalibrator;
+  private rvfcPresent = NaN; // reference time of the latest presented frame (rVFC)
+  private seededLatency = false;
+  /** Odometry speed (m/s, smoothed): walking frames are down-weighted for the calibration. */
+  private odoSpeed = 0;
+  private lastTf = NaN;
+  private readonly lastOdoPos = { x: 0, z: 0 };
+  // Display-sync position ring: capture time + sample-filtered position.
+  private readonly posRing = new Float64Array(POS_RING * 4);
+  private posHead = 0;
+  private posCount = 0;
+  private readonly pfSample = new PosFilter();
+
   private good = 0;
   private bad = 0;
   private badReason = "Point the camera at the floor";
@@ -183,6 +212,7 @@ class WorldTrackerImpl implements WorldTracker {
   constructor(opts: WorldTrackerOptions, env: TrackerEnv) {
     this.h = opts.cameraHeight ?? 1.3;
     this.fovDeg = opts.fovLongSideDeg ?? 65;
+    this.configuredFov = this.fovDeg;
     this.targetY = this.h;
     this.nowFn = env.now ?? (() => performance.now());
     this.screenAngleFn =
@@ -198,9 +228,11 @@ class WorldTrackerImpl implements WorldTracker {
         }
       });
     this.grabber = env.grabber ?? new GrayFrameGrabber(192);
+    this.sync = new VideoSyncCalibrator(CAMERA_LATENCY_MS, focalForFov(this.fovDeg, 192));
     this.target = env.target ?? (typeof window !== "undefined" ? window : null);
     this.created = this.nowFn();
     this.pf.reset(0, this.h, 0);
+    this.pfSample.reset(0, this.h, 0);
     this.syncScreenAngle();
     if (this.target) {
       this.target.addEventListener("deviceorientation", this.onOri);
@@ -227,6 +259,12 @@ class WorldTrackerImpl implements WorldTracker {
   }
   get cameraHeight(): number {
     return this.h;
+  }
+  get fovLongSideDeg(): number {
+    return this.fovDeg;
+  }
+  get latencyMs(): number {
+    return this.sync.latencyMs;
   }
 
   private stamp(ts: number): number {
@@ -262,8 +300,11 @@ class WorldTrackerImpl implements WorldTracker {
 
   setFov(longSideFovDeg: number): void {
     if (!Number.isFinite(longSideFovDeg)) return;
+    this.configuredFov = longSideFovDeg;
+    if (this.fovDeg !== this.configuredFov && this.sync.accepted > 0) return; // a clearly different measured FOV stays
     this.fovDeg = longSideFovDeg;
     this.odo?.setFov(longSideFovDeg);
+    this.sync.setDefaultFocal(focalForFov(longSideFovDeg, Math.max(this.grabber.width, this.grabber.height) || 192));
   }
 
   recenter(): void {
@@ -273,6 +314,11 @@ class WorldTrackerImpl implements WorldTracker {
     this.targetY = this.h;
     this.targetZ = 0;
     this.pf.reset(0, this.h, 0);
+    this.pfSample.reset(0, this.h, 0);
+    this.posCount = 0;
+    this.posHead = 0;
+    this.lastTf = NaN;
+    this.sync.reset(); // the orientation history restarted: old motion samples no longer line up
     this.haveFrame = false;
     this.good = 0;
     this.bad = 0;
@@ -308,14 +354,16 @@ class WorldTrackerImpl implements WorldTracker {
 
   private hookFrameCallback(video: HTMLVideoElement): void {
     const v = video as unknown as {
-      requestVideoFrameCallback?: (cb: (now: number, meta: { captureTime?: number }) => void) => number;
+      requestVideoFrameCallback?: (cb: (now: number, meta: { captureTime?: number; presentationTime?: number }) => void) => number;
     };
     if (this.rvfcVideo === video || typeof v.requestVideoFrameCallback !== "function") return;
     this.rvfcVideo = video;
-    const cb = (_now: number, meta: { captureTime?: number }) => {
+    const cb = (now: number, meta: { captureTime?: number; presentationTime?: number }) => {
       if (this.disposed || this.rvfcVideo !== video) return;
       this.frameCounter++;
       this.rvfcCapture = typeof meta?.captureTime === "number" ? meta.captureTime : NaN;
+      const pt = meta?.presentationTime;
+      this.rvfcPresent = typeof pt === "number" && Number.isFinite(pt) && Math.abs(pt - now) < 500 ? pt : now;
       this.rvfcId = v.requestVideoFrameCallback!(cb);
     };
     this.rvfcId = v.requestVideoFrameCallback(cb);
@@ -349,7 +397,17 @@ class WorldTrackerImpl implements WorldTracker {
         this.odo = new FloorOdometry({ width: w, height: h, fovLongSideDeg: this.fovDeg, cameraHeight: this.h });
         this.odo.reset(prev ? prev.x : this.targetX, this.h, prev ? prev.z : this.targetZ);
       }
-      let tf = Number.isFinite(this.rvfcCapture) ? this.rvfcCapture : now - CAMERA_LATENCY_MS;
+      // Reference time of this frame, then its capture time from the measured latency.
+      const tRef = this.referenceTime(video, now);
+      if (!this.seededLatency && this.rvfcVideo === video && Number.isFinite(this.rvfcCapture)) {
+        // A browser-reported capture time is a better starting point than the generic guess.
+        const reported = tRef - this.rvfcCapture;
+        if (reported > 10 && reported < 300 && this.sync.accepted === 0) this.sync.latencyMs = reported;
+        this.seededLatency = true;
+      }
+      this.sync.pushFrame(this.grabber.gray, w, h, tRef, Math.exp(-this.odoSpeed / 0.25));
+      if (this.sync.maybeEstimate((o, t) => this.ori.quaternionAt(o as Quat, t), now)) this.applyMeasuredFocal(w, h);
+      let tf = tRef - this.sync.latencyMs;
       if (!(tf > now - 500 && tf <= now)) tf = now - CAMERA_LATENCY_MS;
       this.ori.quaternionAt(this.q, tf);
       quatToMat(this.q, this.R);
@@ -358,6 +416,16 @@ class WorldTrackerImpl implements WorldTracker {
       this.targetY = r.y;
       this.targetZ = r.z;
       this.pf.update(r.x, r.y, r.z, now);
+      // Display-sync samples: filtered at their own capture times, so interpolating them adds no lag.
+      if (Number.isFinite(this.lastTf) && tf > this.lastTf) {
+        const sp = Math.hypot(r.x - this.lastOdoPos.x, r.z - this.lastOdoPos.z) / ((tf - this.lastTf) / 1000);
+        this.odoSpeed += (Math.min(sp, 3) - this.odoSpeed) * 0.3;
+      }
+      this.lastTf = tf;
+      this.lastOdoPos.x = r.x;
+      this.lastOdoPos.z = r.z;
+      this.pfSample.update(r.x, r.y, r.z, tf);
+      this.pushPos(tf, this.pfSample.x, this.pfSample.y, this.pfSample.z);
       this.framePos.x = this.pf.x;
       this.framePos.y = this.pf.y;
       this.framePos.z = this.pf.z;
@@ -412,6 +480,107 @@ class WorldTrackerImpl implements WorldTracker {
     return out;
   }
 
+  /**
+   * Pose matching the video frame ON SCREEN: rotation and position at that frame's capture time.
+   * Use this for the rendered three.js camera so the dog stays locked to the image.
+   */
+  getDisplayPose(out: TrackedPose): TrackedPose {
+    if (!this.ori.hasData) return this.getPose(out);
+    const now = this.nowFn();
+    const t = this.referenceTime(this.rvfcVideo, now) - this.sync.latencyMs;
+    this.ori.quaternionAt(this.q, t);
+    out.quaternion.set(this.q.x, this.q.y, this.q.z, this.q.w);
+    if (!this.posAt(t, out.position)) {
+      this.pf.update(this.targetX, this.targetY, this.targetZ, now);
+      out.position.set(this.pf.x, this.pf.y, this.pf.z);
+    }
+    return out;
+  }
+
+  /** Presentation time of the frame now on screen (rVFC), else `now`. */
+  private referenceTime(video: HTMLVideoElement | null, now: number): number {
+    const p = this.rvfcPresent;
+    return video && this.rvfcVideo === video && Number.isFinite(p) && p <= now && p > now - 500 ? p : now;
+  }
+
+  private pushPos(t: number, x: number, y: number, z: number): void {
+    const o = this.posHead * 4;
+    this.posRing[o] = t;
+    this.posRing[o + 1] = x;
+    this.posRing[o + 2] = y;
+    this.posRing[o + 3] = z;
+    this.posHead = (this.posHead + 1) % POS_RING;
+    if (this.posCount < POS_RING) this.posCount++;
+  }
+
+  /** Position at time t from the sample ring (interpolated; short linear extrapolation past the newest). */
+  private posAt(t: number, out: { set(x: number, y: number, z: number): unknown }): boolean {
+    const n = this.posCount;
+    if (n === 0) return false;
+    const r = this.posRing;
+    const newest = (this.posHead - 1 + POS_RING) % POS_RING;
+    const tn = r[newest * 4];
+    if (t >= tn) {
+      if (n >= 2) {
+        const prev = (newest - 1 + POS_RING) % POS_RING;
+        const dt = tn - r[prev * 4];
+        const ahead = Math.min(t - tn, MAX_POS_EXTRAPOLATION_MS);
+        if (dt > 1 && dt < 200 && ahead > 0) {
+          const k = ahead / dt;
+          out.set(
+            r[newest * 4 + 1] + (r[newest * 4 + 1] - r[prev * 4 + 1]) * k,
+            r[newest * 4 + 2],
+            r[newest * 4 + 3] + (r[newest * 4 + 3] - r[prev * 4 + 3]) * k,
+          );
+          return true;
+        }
+      }
+      out.set(r[newest * 4 + 1], r[newest * 4 + 2], r[newest * 4 + 3]);
+      return true;
+    }
+    let i = newest;
+    for (let k = 0; k < n - 1; k++) {
+      const j = (i - 1 + POS_RING) % POS_RING;
+      const t0 = r[j * 4];
+      if (t0 <= t) {
+        const t1 = r[i * 4];
+        const u = t1 > t0 ? (t - t0) / (t1 - t0) : 1;
+        out.set(
+          r[j * 4 + 1] + (r[i * 4 + 1] - r[j * 4 + 1]) * u,
+          r[j * 4 + 2] + (r[i * 4 + 2] - r[j * 4 + 2]) * u,
+          r[j * 4 + 3] + (r[i * 4 + 3] - r[j * 4 + 3]) * u,
+        );
+        return true;
+      }
+      i = j;
+    }
+    out.set(r[i * 4 + 1], r[i * 4 + 2], r[i * 4 + 3]); // older than the ring: the oldest sample
+    return true;
+  }
+
+  /**
+   * A new focal length was measured. The measurement is good to roughly ±5 % (scene-dependent:
+   * turning while looking down adds image roll), which is about how far a typical phone's video
+   * FOV is from the default, so it only takes over when it says the configured FOV is clearly
+   * wrong (> FOV_OVERRIDE): a zoomed / cropped stream or an unusual camera. The latency estimate
+   * is much tighter and is always used.
+   */
+  private applyMeasuredFocal(w: number, h: number): void {
+    const long = Math.max(w, h);
+    const fov = (2 * Math.atan(long / 2 / this.sync.focalPx) * 180) / Math.PI;
+    if (!(fov > 40 && fov < 95)) return; // implausible for a phone's main camera: ignore
+    const base = this.configuredFov;
+    if (Math.abs(fov - base) / base < FOV_OVERRIDE) {
+      if (this.fovDeg !== base) {
+        this.fovDeg = base; // back within tolerance of the configured value: keep that
+        this.odo?.setFov(base);
+      }
+      return;
+    }
+    this.fovDeg = fov;
+    this.odo?.setFov(fov);
+  }
+
   get framesProcessed(): number {
     return this.frames;
   }
@@ -443,4 +612,9 @@ function quatToMat(q: Quat, m: Float64Array): void {
 /** `env` is for tests (injected event target / clock / frame source); the app passes only opts. */
 export function createWorldTracker(opts: WorldTrackerOptions = {}, env: TrackerEnv = {}): WorldTracker {
   return new WorldTrackerImpl(opts, env);
+}
+
+/** Focal length (px) of a frame whose long side is `longPx` pixels and spans `fovDeg`. */
+function focalForFov(fovDeg: number, longPx: number): number {
+  return longPx / 2 / Math.tan((fovDeg * Math.PI) / 360);
 }
