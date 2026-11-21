@@ -124,6 +124,8 @@ cloudflared tunnel --url https://localhost:5173 --no-tls-verify
 
 It prints an address like `https://random-words.trycloudflare.com`. Open it on your phone. The address changes every time, and anyone who has it can open the page while the tunnel runs.
 
+**Option D: permanent URL (GitHub Pages).** The app is fully static (all tracking runs on the phone), so any static host works and 10-20 phones at once is no problem. `.github/workflows/deploy.yml` publishes `dist/` on every push to `main`. One-time setup: repo **Settings > Pages > Source: GitHub Actions**. The URL is `https://<user>.github.io/HW13/`. (Private repos need a paid GitHub plan for Pages.) Cloudflare Pages or Vercel also work: import the repo, build command `npm run build`, output directory `dist`.
+
 **Option C: tunnel the built app.** From the project folder:
 
 ```sh
