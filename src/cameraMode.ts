@@ -8,10 +8,10 @@ import {
   rayToFloor,
   type Projection,
 } from "./cameraPlacement";
-import { dogConfigStore } from "./dog/config";
-import type { DogCharacter } from "./dog/types";
+import type { PetCharacter } from "./dog/types";
 import { createDogPlay } from "./dogPlay";
-import { createDogCharacter } from "./models/dog";
+import { createPetCharacter } from "./models/pet";
+import { petName, petStore, type Pet } from "./pets";
 import { createShadowCatcher, shadowSizeFor } from "./shadow";
 import {
   createWorldTracker,
@@ -88,7 +88,8 @@ async function resolveMotion(
 
 /**
  * Starts camera mode. Call from a click handler (camera permission prompt). Throws if the camera
- * can't be opened. `onEnd` runs after Exit, once the camera is stopped and the render loop is free.
+ * can't be opened or no pet is active (petStore.active()). `onEnd` runs after Exit, once the camera
+ * is stopped and the render loop is free.
  *
  * `motion`: the promise from `requestMotionPermission()`, which the launcher must call
  * SYNCHRONOUSLY at the top of the click handler (iOS only shows the motion prompt from a user
@@ -102,6 +103,12 @@ export async function startCameraMode(
   onEnd: () => void,
   motion?: Promise<MotionPermission>,
 ): Promise<void> {
+  const active = petStore.active();
+  if (!active) {
+    void motion?.catch(() => {}); // don't leave an unhandled rejection behind
+    throw new Error("No animal selected to deploy.");
+  }
+  const pet: Pet = active; // (a non-null const: callbacks below keep the narrowing)
   let stream: MediaStream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
@@ -220,9 +227,9 @@ export async function startCameraMode(
     scene.add(catcher);
 
     // ---- State (declared before any setup call) ----
-    const play = createDogPlay(scene, ui, videoUVToScreen);
+    const play = createDogPlay(scene, ui, videoUVToScreen, pet.species);
     playRef = play;
-    let dog: DogCharacter | null = null;
+    let dog: PetCharacter | null = null;
     let anchor: THREE.Group | null = null;
     let tracked = tracker !== null;
     let floorY = tracked ? 0 : FALLBACK_FLOOR_Y;
@@ -260,7 +267,7 @@ export async function startCameraMode(
     let loopErrors = 0;
     let ended = false;
 
-    const dogName = () => dogConfigStore.get().name.trim() || "your dog";
+    const dogName = () => petName(pet);
     const setHint = (text: string) => {
       if (text !== lastHint) ui.hint.textContent = lastHint = text;
     };
@@ -344,7 +351,7 @@ export async function startCameraMode(
     /** First placement (creates the dog) or re-placement at `point`, facing the camera. */
     function placeAt(point: THREE.Vector3, quiet = false) {
       if (!dog || !anchor) {
-        dog = createDogCharacter(dogConfigStore.get());
+        dog = createPetCharacter(pet);
         anchor = new THREE.Group();
         anchor.add(dog.root);
         scene.add(anchor);

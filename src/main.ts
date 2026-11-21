@@ -4,8 +4,8 @@ import { requestMotionPermission, type MotionPermission } from "./tracking";
 import { primeVoice, releasePrimedVoice } from "./dogPlay";
 import { isCameraModeSupported, startCameraMode } from "./cameraMode";
 import { mountCreator } from "./creator";
-import { dogConfigStore } from "./dog/config";
-import type { DogConfig } from "./dog/types";
+import { mountMenu } from "./menu";
+import { petName, petStore } from "./pets";
 import { createPreview } from "./preview";
 import { createQuickLook, isIOS } from "./quicklook";
 import { arUIFromDOM, isWebXRARSupported, startARSession, type ARUI } from "./webxr";
@@ -19,18 +19,49 @@ const cameraButton = $<HTMLButtonElement>("btn-camera");
 const quickLook = $<HTMLAnchorElement>("quicklook");
 const quickLookImg = $<HTMLImageElement>("quicklook-img");
 const cameraVideo = $<HTMLVideoElement>("camera-video");
+const menuEl = $("menu");
+const creatorEl = $("creator");
+const backButton = $<HTMLButtonElement>("btn-back");
 const ui: ARUI = arUIFromDOM();
 
-mountCreator($("creator"));
+/*
+ * Two views in the panel: the "My pets" slot menu (always first, also on revisit, with the last
+ * active slot pre-selected) and the creator for the active pet, remounted each time it opens.
+ */
+let creator: { destroy(): void } | null = null;
+function showMenu() {
+  creator?.destroy();
+  creator = null;
+  creatorEl.hidden = backButton.hidden = true;
+  menuEl.hidden = false;
+}
+function showCreator() {
+  if (!petStore.active()) return;
+  creator?.destroy();
+  menuEl.hidden = true;
+  creatorEl.hidden = backButton.hidden = false;
+  creatorEl.scrollTop = 0;
+  creator = mountCreator(creatorEl);
+  backButton.focus();
+}
+backButton.addEventListener("click", () => {
+  showMenu();
+  menuEl.querySelector<HTMLElement>(`[data-key="pick-${petStore.activeSlot()}"]`)?.focus();
+});
+mountMenu(menuEl, showCreator);
 
-const dogName = (c: DogConfig) => c.name.trim() || "your dog";
-const syncDeployLabel = (c: DogConfig) => {
-  deployButton.textContent = `Deploy ${dogName(c)}`;
+/** Set once the AR path is known: whether this device has a Deploy button at all. */
+let canDeploy = false;
+const syncDeploy = () => {
+  const pet = petStore.active();
+  deployButton.textContent = `Deploy ${petName(pet)}`;
+  deployButton.hidden = !canDeploy || !pet;
+  if (!pet && creator) showMenu();
 };
-syncDeployLabel(dogConfigStore.get());
-dogConfigStore.subscribe(syncDeployLabel);
+syncDeploy();
+petStore.subscribe(syncDeploy);
 
-/** Leave the centered "Checking AR support…" screen for the creator layout. */
+/** Leave the centered "Checking AR support…" screen for the panel layout. */
 const doneChecking = () => home.classList.remove("checking");
 
 /**
@@ -46,10 +77,10 @@ function setup3D() {
   renderer.xr.enabled = true;
   $("app").appendChild(renderer.domElement);
 
-  const preview = createPreview(renderer, dogConfigStore.get());
-  dogConfigStore.subscribe((c) => preview.setConfig(c));
+  const preview = createPreview(renderer, petStore.active());
+  petStore.subscribe(() => preview.setPet(petStore.active()));
 
-  // Frame the dog beside / above the creator panel, whose size changes with the window,
+  // Frame the pet beside / above the creator panel, whose size changes with the window,
   // the visible buttons, the status text and the end of the "checking" state.
   const measureHome = () => {
     if (home.hidden || home.classList.contains("checking")) return;
@@ -98,6 +129,7 @@ function launcher(
   withMotion = false,
 ) {
   button.addEventListener("click", async () => {
+    if (!petStore.active()) return; // the sessions deploy petStore.active()
     // The motion prompt must be started synchronously in this tap, before any await: Safari only
     // grants it while the transient user activation is live. Stacking the mic prompt (and then the
     // camera prompt) in the same tick risks iOS auto-denying one of them, so with motion sensors in
@@ -134,20 +166,22 @@ function launcher(
 async function init(view: View) {
   const { renderer } = view;
 
-  // 1. Android (Chrome + ARCore): full WebXR AR. Deploy = start AR, tap a surface to place the dog.
+  // 1. Android (Chrome + ARCore): full WebXR AR. Deploy = start AR, tap a surface to place the pet.
   if (await isWebXRARSupported()) {
-    homeText.textContent = "Make your dog, then deploy it: scan the floor and tap to place it.";
-    deployButton.hidden = false;
+    homeText.textContent = "Pick or create a pet, then deploy it: scan the floor and tap to place it.";
+    canDeploy = true;
+    syncDeploy();
     doneChecking();
     launcher(view, deployButton, (onEnd) => startARSession(renderer, ui, onEnd), "Couldn't start AR");
     return;
   }
 
-  // Everywhere else Deploy opens camera mode (the dog over the live camera, world-tracked via src/tracking when motion sensors exist).
+  // Everywhere else Deploy opens camera mode (the pet over the live camera, world-tracked via src/tracking when motion sensors exist).
   // #btn-camera stays hidden: it would only repeat Deploy.
   const camera = isCameraModeSupported();
   if (camera) {
-    deployButton.hidden = false;
+    canDeploy = true;
+    syncDeploy();
     launcher(
       view,
       deployButton,
@@ -159,16 +193,16 @@ async function init(view: View) {
     );
   }
 
-  // 2. iPhone / iPad: no WebXR AR. Deploy = camera mode; Quick Look shows the custom dog as a
+  // 2. iPhone / iPad: no WebXR AR. Deploy = camera mode; Quick Look shows the custom pet as a
   //    still model on the real floor, re-exported (debounced, latest wins) when it changes.
   if (isIOS()) {
     doneChecking();
     let quickLookNote: HTMLParagraphElement | null = null;
     homeText.textContent = camera
-      ? "Make your dog, then deploy it: scan the floor and tap to place it."
+      ? "Pick or create a pet, then deploy it: scan the floor and tap to place it."
       : window.isSecureContext
-        ? "Quick Look places your dog, as a still model, on your floor."
-        : "Camera and tracking need HTTPS: open this page through an https:// address. Quick Look places your dog, as a still model, on your floor.";
+        ? "Quick Look places your pet, as a still model, on your floor."
+        : "Camera and tracking need HTTPS: open this page through an https:// address. Quick Look places your pet, as a still model, on your floor.";
     if (camera) {
       const tip = document.createElement("p");
       tip.className = "home-tip";
@@ -188,15 +222,18 @@ async function init(view: View) {
     syncNote();
     let timer: number | undefined;
     const prepare = async () => {
+      const pet = petStore.active();
+      if (!pet) return;
       try {
-        await ql.show(dogConfigStore.get());
+        await ql.show(pet);
+        if (!petStore.active()) quickLook.hidden = true; // deselected while exporting
       } catch (err) {
         console.error(err);
         homeText.textContent = "Couldn't prepare the AR model on this device.";
       }
     };
-    dogConfigStore.subscribe(() => {
-      quickLook.hidden = true; // never open an outdated dog
+    petStore.subscribe(() => {
+      quickLook.hidden = true; // never open an outdated pet
       clearTimeout(timer);
       timer = window.setTimeout(() => void prepare(), 400);
     });
@@ -210,12 +247,12 @@ async function init(view: View) {
     homeText.textContent = "AR needs HTTPS. Open this page through an https:// address.";
   } else if (/Android/i.test(navigator.userAgent)) {
     homeText.textContent = camera
-      ? "Full AR isn't available here (use Chrome with “Google Play Services for AR”). Deploy shows your dog through the camera."
+      ? "Full AR isn't available here (use Chrome with “Google Play Services for AR”). Deploy shows your pet through the camera."
       : "AR isn't available here. Use Chrome, and install “Google Play Services for AR” from the Play Store.";
   } else {
     homeText.textContent = camera
-      ? "Make your dog, then deploy it into your webcam view. Full AR needs an Android phone."
-      : "Make your dog here. Open this page on an Android phone (Chrome) or an iPhone to deploy it.";
+      ? "Pick or create a pet, then deploy it into your webcam view. Full AR needs an Android phone."
+      : "Make your pets here. Open this page on an Android phone (Chrome) or an iPhone to deploy them.";
   }
 }
 

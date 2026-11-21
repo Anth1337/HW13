@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:pets": "rolldown src/pets.ts -f esm -p node -o node_modules/.cache/pets.mjs && node scripts/check-pets.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.2.3",

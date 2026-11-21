@@ -1,13 +1,14 @@
 import * as THREE from "three";
-import { dogGaitInfo } from "../models/dog";
+import { petGaitInfo } from "../models/pet";
+import type { Species } from "../pets";
 import type { PerceivedFace, PerceivedHand, PerceivedPerson } from "../vision/types";
 import { TRICK_DURATION } from "./types";
-import type { DogBrain, DogCharacter, DogCommand, DogMode, DogZones, TrickKind } from "./types";
+import type { DogBrain, DogCommand, DogMode, DogZones, PetCharacter, TrickKind } from "./types";
 
 /*
- * The dog's brain: perception (hands + faces in world space) + commands → anchor movement and
- * smoothed DogControls. The model is stateless, so all timing, easing and gait-phase integration
- * live here. Every smoothing step is frame-rate independent (exponential with a time constant,
+ * The pet's brain, for any species (what differs per species is in PROFILES): perception
+ * (hands + faces in world space) + commands → anchor movement and smoothed DogControls. The
+ * model is stateless, so all timing, easing and gait-phase integration live here. Every smoothing step is frame-rate independent (exponential with a time constant,
  * or rate-limited linear ramps), and per-frame work is allocation-free.
  *
  * Each frame:
@@ -26,9 +27,7 @@ import type { DogBrain, DogCharacter, DogCommand, DogMode, DogZones, TrickKind }
 
 const DEG = Math.PI / 180;
 
-// Movement.
-const FOLLOW_START = 1.6; // m from the user before the dog sets off after them
-const FOLLOW_STOP = 0.8; // m from the user where it stops
+// Movement (follow distances are per species: PROFILES).
 const COME_DIST = 0.6; // m in front of the user (nose)
 const FREE_RADIUS = 2.1; // m: wander targets are within this of the user (limit 2.5)
 const FREE_LIMIT = 2.5;
@@ -93,6 +92,103 @@ const NO_KEY = -1e9;
 
 const EXCITE_BASE = 0.25;
 const FAST_FORWARD_S = 0.4; // a queued trick fast-forwards the running one to its end this quickly
+
+// ---- Species profiles ----------------------------------------------------------------------
+
+/**
+ * What differs between species. Idle / free-roam chances are rolled per idle check / per
+ * free-roam arrival; the free ones are cumulative in the order lie, sit, groom, sniff (the rest:
+ * just stand there).
+ */
+interface Profile {
+  followStart: number; // m from the user before it sets off after them
+  followStop: number; // m from the user where it stops
+  followSpeed: number; // × the catch-up speed (a cat strolls after you)
+  freeTrot: number; // chance a free-roam leg is trotted
+  free: { lie: number; sit: number; groom: number; sniff: number };
+  idleSit: number; // follow, idle a while: chance of sitting down by itself
+  idleLie: number; // ... of lying down instead
+  idleGroom: number; // ... of grooming instead
+  comeIgnore: number; // chance "come" is ignored for a few seconds first
+  comeRefuse: number; // the part of comeIgnore where it then doesn't come at all
+  lureSpeed: number; // × walk speed while following a moving hand
+  pounceChance: number; // a hand stalked for a while that stops gets pounced on
+  status: {
+    petHead: string;
+    chin: string; // head pat from below the eyes
+    petBody: string;
+    handSniff: string;
+    handLure: string;
+    sit: string;
+    lie: string;
+    ignore: string;
+    exploring: string; // after the name
+  };
+}
+
+const PROFILES: Record<Species, Profile> = {
+  dog: {
+    followStart: 1.6,
+    followStop: 0.8,
+    followSpeed: 1,
+    freeTrot: 0.2,
+    free: { lie: 0.15, sit: 0, groom: 0, sniff: 0.55 },
+    idleSit: 0.5,
+    idleLie: 0,
+    idleGroom: 0,
+    comeIgnore: 0,
+    comeRefuse: 0,
+    lureSpeed: 1,
+    pounceChance: 0,
+    status: {
+      petHead: "Loves the head pats",
+      chin: "Loves the head pats",
+      petBody: "Enjoying a back rub",
+      handSniff: "Sniffing your hand",
+      handLure: "Following your hand",
+      sit: "Sitting",
+      lie: "Lying down",
+      ignore: "",
+      exploring: "is exploring",
+    },
+  },
+  cat: {
+    followStart: 2.2,
+    followStop: 1.2,
+    followSpeed: 0.6,
+    freeTrot: 0.05,
+    free: { lie: 0.3, sit: 0.15, groom: 0.15, sniff: 0.2 },
+    idleSit: 0.3,
+    idleLie: 0.3,
+    idleGroom: 0.25,
+    comeIgnore: 0.3,
+    comeRefuse: 0.1,
+    lureSpeed: 0.6,
+    pounceChance: 0.7,
+    status: {
+      petHead: "Purring",
+      chin: "Purring at the chin scratches",
+      petBody: "Arching into the stroke",
+      handSniff: "Sniffing your fingers",
+      handLure: "Stalking your hand",
+      sit: "Sitting",
+      lie: "Loafing",
+      ignore: "Pretending not to hear you",
+      exploring: "is prowling around",
+    },
+  },
+};
+
+const TRICK_STATUS: Record<TrickKind, string> = {
+  rollOver: "Rolling over!",
+  jump: "Jumping!",
+  spin: "Spinning!",
+  pounce: "Pouncing!",
+  stretch: "Stretching",
+  groom: "Grooming",
+};
+
+const LURE_POUNCE_S = 1.2; // s of stalking a moving hand before its stopping can trigger a pounce
 
 // ---- Helpers -----------------------------------------------------------------------------
 
@@ -166,9 +262,10 @@ function faceKey(f: PerceivedFace): number {
   return f.personId !== null ? f.personId : -2 - f.id * 2;
 }
 
-export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorYIn: number): DogBrain {
+export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorYIn: number): DogBrain {
   const controls = dog.controls;
-  const name = dog.config.name || "Your dog";
+  const prof = PROFILES[dog.species];
+  const name = dog.config.name || (dog.species === "cat" ? "Your cat" : "Your dog");
   let floorY = floorYIn;
   let now = 0;
 
@@ -187,7 +284,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
   const STRIDE_STEP = 0.05;
   const STRIDE_MIN = 0.3;
   const strideTable: number[] = [];
-  for (let s = STRIDE_MIN; s <= 1.2 + 1e-6; s += STRIDE_STEP) strideTable.push(dogGaitInfo(dog, s).stride);
+  for (let s = STRIDE_MIN; s <= 1.2 + 1e-6; s += STRIDE_STEP) strideTable.push(petGaitInfo(dog, s).stride);
   function strideAt(gs: number): number {
     if (gs <= STRIDE_MIN) return strideTable[0] * (gs / STRIDE_MIN);
     const f = (Math.min(gs, 1.2) - STRIDE_MIN) / STRIDE_STEP;
@@ -249,6 +346,9 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
   const goToPt = new THREE.Vector3();
   let following = false; // follow mode: currently catching up
   let comeFacing = false; // come: arrived, turning to face the user
+  let comeIgnoreUntil = -1; // come: pretending not to hear until then (cats)
+  let comeRefused = false; // ... and then not coming at all
+  let lureTime = 0; // s the engaged hand has been stalked while moving (pounce trigger)
 
   // Free roam.
   let freeHasTarget = false;
@@ -256,7 +356,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
   let freeTz = 0;
   let freeTrot = false;
   let freeReplanAt = 0;
-  let freeActivity: "none" | "sniff" | "lie" = "none";
+  let freeActivity: "none" | "sniff" | "lie" | "sit" = "none";
   let freeActivityUntil = 0;
 
   // Idle (follow / stay).
@@ -336,10 +436,6 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
 
   // ---------------------------------------------------------------------------------------
 
-  function trickStatus(kind: TrickKind): string {
-    return kind === "rollOver" ? "Rolling over!" : kind === "jump" ? "Jumping!" : "Spinning!";
-  }
-
   function resetPets(): void {
     for (const z of ["head", "body"] as const) {
       pets[z].active = false;
@@ -357,6 +453,13 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     trickState.progress = 0;
     controls.trick = trickState;
     resetPets();
+  }
+
+  /** A trick the pet starts by itself (grooming, pouncing): same path as a commanded one. */
+  function autoTrick(kind: TrickKind): void {
+    if (trickRunning || pendingTrick !== null) return;
+    postureBeforeTrick = postureCmd;
+    pendingTrick = kind;
   }
 
   function setPosture(p: Posture, auto: boolean): void {
@@ -824,6 +927,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     | "handLure"
     | "handWatch"
     | "come"
+    | "ignore"
     | "goTo"
     | "follow"
     | "free"
@@ -898,7 +1002,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
         // Small adjustments are not worth getting up / walking for.
         const minMove = postureCmd === "stand" ? 0.04 : 0.25;
         if (dist > minMove || (v > 0.02 && dist > 0.015)) {
-          setWant(tx, tz, moving ? V_WALK : Math.min(V_TROT, 0.6 * V_WALK + 0.5 * dist), 0.02);
+          setWant(tx, tz, moving ? V_WALK * prof.lureSpeed : Math.min(V_TROT, 0.6 * V_WALK + 0.5 * dist), 0.02);
         }
       }
       // Face the hand (used while standing or shuffling; ignored when it's right overhead).
@@ -907,6 +1011,18 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     }
 
     // 3. come / goTo.
+    if (comeActive && now < comeIgnoreUntil) {
+      activity = "ignore"; // stays put, doing its own thing
+      return;
+    }
+    if (comeActive && comeRefused) {
+      comeActive = false; // never came after all
+      comeRefused = false;
+    }
+    if (comeActive && comeIgnoreUntil >= 0) {
+      comeIgnoreUntil = -1; // gave in: get up and come
+      setPosture("stand", false);
+    }
     if (comeActive) {
       activity = "come";
       let fx: number;
@@ -963,14 +1079,14 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     const du = Math.hypot(ax - ux, az - uz);
     if (mode === "follow") {
       activity = "follow";
-      if (!following && du > FOLLOW_START) following = true;
+      if (!following && du > prof.followStart) following = true;
       if (following) {
         let ox = ax - ux;
         let oz = az - uz;
         const ol = Math.max(du, 1e-4);
         ox /= ol;
         oz /= ol;
-        const stop = Math.max(FOLLOW_STOP, VIEWER_KEEPOUT + noseF + 0.08);
+        const stop = Math.max(prof.followStop, VIEWER_KEEPOUT + noseF + 0.08);
         const tx = ux + ox * stop;
         const tz = uz + oz * stop;
         const dt = Math.hypot(tx - ax, tz - az);
@@ -978,7 +1094,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
           following = false;
           resetIdle();
         } else {
-          setWant(tx, tz, speedForDistance(dt), 0.05);
+          setWant(tx, tz, speedForDistance(dt) * prof.followSpeed, 0.05);
           return;
         }
       }
@@ -1019,7 +1135,10 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
       nextIdleSniff = now + rand(8, 16);
     }
     if (now >= nextAutoSit && postureCmd === "stand" && now - idleSince > 10) {
-      if (Math.random() < 0.5) setPosture("sit", true);
+      const r = Math.random();
+      if (r < prof.idleSit) setPosture("sit", true);
+      else if (r < prof.idleSit + prof.idleLie) setPosture("lie", true);
+      else if (r < prof.idleSit + prof.idleLie + prof.idleGroom) autoTrick("groom");
       nextAutoSit = now + rand(15, 30);
     }
   }
@@ -1037,7 +1156,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
         freeTx = x;
         freeTz = z;
         freeHasTarget = true;
-        freeTrot = Math.random() < 0.2;
+        freeTrot = Math.random() < prof.freeTrot;
         return;
       }
     }
@@ -1062,12 +1181,17 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
         freeHasTarget = false;
         // Arrived: do something for a while.
         const roll = Math.random();
-        if (roll < 0.15) {
-          freeActivity = "lie";
+        const f = prof.free;
+        if (roll < f.lie + f.sit) {
+          freeActivity = roll < f.lie ? "lie" : "sit";
           freeActivityUntil = now + rand(7, 12);
-          setPosture("lie", true);
+          setPosture(freeActivity, true);
           freeReplanAt = freeActivityUntil;
-        } else if (roll < 0.7) {
+        } else if (roll < f.lie + f.sit + f.groom) {
+          freeActivity = "none";
+          autoTrick("groom");
+          freeReplanAt = now + TRICK_DURATION.groom + rand(2, 5);
+        } else if (roll < f.lie + f.sit + f.groom + f.sniff) {
           freeActivity = "sniff";
           freeActivityUntil = now + rand(1.5, 3.5);
           freeReplanAt = now + rand(4, 10);
@@ -1080,7 +1204,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
         return;
       }
     }
-    if (freeActivity === "lie" && now >= freeActivityUntil) {
+    if ((freeActivity === "lie" || freeActivity === "sit") && now >= freeActivityUntil) {
       freeActivity = "none";
       if (autoPosture) setPosture("stand", false);
     }
@@ -1250,7 +1374,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
 
   /** Chooses the look target into desiredW and returns its weight (0 = idle look-around). */
   function chooseLook(dt: number): number {
-    if (activity === "trick") return 0;
+    if (activity === "trick" || activity === "ignore") return 0;
     if (activity === "petHead") {
       // Look at the person petting (a second person's pat too); the phone holder when that is unknown.
       const petter = petOwnerKey >= 0 ? findPerson(petOwnerKey) : null;
@@ -1318,33 +1442,35 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
   function computeStatus(): string {
     switch (activity) {
       case "trick":
-        return trickRunning ? trickStatus(trickState.kind) : pendingTrick ? trickStatus(pendingTrick) : "";
+        return trickRunning ? TRICK_STATUS[trickState.kind] : pendingTrick ? TRICK_STATUS[pendingTrick] : "";
       case "petHead":
-        return "Loves the head pats";
+        return pets.head.point.y < eyes.y - 0.01 ? prof.status.chin : prof.status.petHead;
       case "petBody":
-        return "Enjoying a back rub";
+        return prof.status.petBody;
       case "handSniff":
-        return "Sniffing your hand";
+        return prof.status.handSniff;
       case "handApproach":
         return mode === "stay" ? `${name} sees your hand` : `${name} is coming to your hand`;
       case "handLure":
-        return "Following your hand";
+        return prof.status.handLure;
       case "handWatch":
         return "Watching your hand";
       case "come":
         return `${name} is coming`;
+      case "ignore":
+        return prof.status.ignore;
       case "goTo":
         return "On the way";
       default:
         break;
     }
-    if (postureCmd === "sit" && sitLin > 0.5) return "Sitting";
-    if (postureCmd === "lie" && lieLin > 0.5) return "Lying down";
+    if (postureCmd === "sit" && sitLin > 0.5) return prof.status.sit;
+    if (postureCmd === "lie" && lieLin > 0.5) return prof.status.lie;
     if (now < listenUntil) return "Listening";
     if (partner !== NO_KEY && partnerLooking()) return now < newPersonUntil ? "Looking at someone new" : "Making eye contact";
     if (activity === "free") {
       if (freeActivity === "sniff" || controls.sniff > 0.5) return "Sniffing around";
-      return `${name} is exploring`;
+      return `${name} ${prof.status.exploring}`;
     }
     if (activity === "stay") return `${name} is staying`;
     return masterVisible ? `${name} is following someone` : `${name} is following you`;
@@ -1436,10 +1562,18 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
       if (partner !== NO_KEY) lastPartnerAt = now;
 
       // ---- Behaviour → movement
+      const wasLuring = activity === "handLure";
       chooseBehaviour();
       updatePeerGlance(
         (activity === "follow" || activity === "free" || activity === "stay") && v < 0.1 && now >= speakerUntil,
       );
+      // Stalked a moving hand for a while and it stopped: pounce on it (cats).
+      if (activity === "handLure") lureTime += dt;
+      else if (engagedId === null) lureTime = 0;
+      if (wasLuring && (activity === "handApproach" || activity === "handSniff") && lureTime > LURE_POUNCE_S) {
+        lureTime = 0;
+        if (Math.random() < prof.pounceChance) autoTrick("pounce");
+      }
       updatePostures(dt);
       updateLocomotion(dt);
       if (activity === "come" && arrived) comeFacing = true;
@@ -1534,13 +1668,18 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
         case "stand":
           setPosture("stand", false);
           break;
-        case "come":
+        case "come": {
           setMaster(who);
+          // Cats: sometimes pretend not to hear first (and now and then never come).
+          const r = Math.random();
+          comeIgnoreUntil = r < prof.comeIgnore ? now + rand(2, 4) : -1;
+          comeRefused = r < prof.comeRefuse;
           comeActive = true;
           comeFacing = false;
           goToActive = false;
-          setPosture("stand", false);
+          if (comeIgnoreUntil < 0) setPosture("stand", false); // an ignoring cat stays put for now
           break;
+        }
         case "follow":
         case "free":
           setMaster(cmd === "follow" ? who : null);
@@ -1570,7 +1709,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
             if (pendingTrick === null) postureBeforeTrick = postureCmd;
             pendingTrick = kind;
           }
-          status = trickStatus(kind);
+          status = TRICK_STATUS[kind];
         }
       }
     },

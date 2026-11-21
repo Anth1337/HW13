@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { USDZExporter } from "three/addons/exporters/USDZExporter.js";
-import type { DogConfig } from "./dog/types";
-import { createDogCharacter } from "./models/dog";
+import { createPetCharacter } from "./models/pet";
+import type { Pet } from "./pets";
 
 /** True on iPhone and iPad (iPadOS reports itself as a Mac with a touch screen). */
 export function isIOS(): boolean {
@@ -15,20 +15,20 @@ export function isIOS(): boolean {
  * iOS Safari has no WebXR AR. Instead it opens .usdz files in AR Quick Look, Apple's built-in
  * viewer, which places the model on a real surface and lets you move, rotate and scale it.
  *
- * `show(config)` builds that custom dog, exports it to USDZ in the browser (a still standing
+ * `show(pet)` builds that custom animal, exports it to USDZ in the browser (a still standing
  * pose: Quick Look can't run our procedural animation) and points the <a rel="ar"> link at it.
  * The export runs ahead of time so the tap opens Quick Look straight away. The link is hidden
- * while an export runs; if the config changes mid-export only the latest request wins. Only the
+ * while an export runs; if the pet changes mid-export only the latest request wins. Only the
  * blob URL the link currently shows is kept: older ones are revoked.
  */
 export function createQuickLook(link: HTMLAnchorElement, img: HTMLImageElement) {
   let latest = 0;
-  /** The blob URL the link points at (and its config key), so it can be revoked when replaced. */
+  /** The blob URL the link points at (and its pet key), so it can be revoked when replaced. */
   let current: { key: string; url: string } | null = null;
   img.src = badge("Quick Look (still model)");
 
-  async function runExport(config: DogConfig): Promise<string> {
-    const dog = createDogCharacter(config);
+  async function runExport(pet: Pet): Promise<string> {
+    const dog = createPetCharacter(pet);
     try {
       dog.update(0);
       const scene = new THREE.Scene();
@@ -43,11 +43,11 @@ export function createQuickLook(link: HTMLAnchorElement, img: HTMLImageElement) 
   }
 
   return {
-    /** Resolves true when the link now shows `config`, false if a newer call replaced this one. */
-    async show(config: DogConfig): Promise<boolean> {
-      const key = JSON.stringify(config);
+    /** Resolves true when the link now shows `pet`, false if a newer call replaced this one. */
+    async show(pet: Pet): Promise<boolean> {
+      const key = JSON.stringify(pet);
       if (current?.key === key) {
-        ++latest; // cancel any export still running for an older config
+        ++latest; // cancel any export still running for an older pet
         link.hidden = false;
         return true;
       }
@@ -55,7 +55,7 @@ export function createQuickLook(link: HTMLAnchorElement, img: HTMLImageElement) 
       link.hidden = true;
       let url: string;
       try {
-        url = await runExport(config);
+        url = await runExport(pet);
       } catch (err) {
         if (request !== latest) return false; // a stale failure doesn't matter
         throw err;
@@ -66,9 +66,9 @@ export function createQuickLook(link: HTMLAnchorElement, img: HTMLImageElement) 
       }
       if (current) URL.revokeObjectURL(current.url);
       current = { key, url };
-      const name = config.name.trim() || "dog";
+      const name = pet.config.name.trim() || pet.species;
       link.href = url;
-      link.download = `${name.replace(/[^\w-]+/g, "_") || "dog"}.usdz`;
+      link.download = `${name.replace(/[^\w-]+/g, "_") || pet.species}.usdz`;
       img.alt = `View ${name} in AR (still)`;
       link.hidden = false;
       return true;
