@@ -25,7 +25,7 @@ Hack Western 13 · Canada Life Future Me Challenge · Team brief · Written Nove
 
 ## Where the idea came from: Settlers of Solana
 
-[Settlers of Solana](https://devpost.com/software/_solanasim) was a Hack the North 2026 finalist and won Best Use of Solana there. It was built by Kyle Wang, Nigel Loh and Yiming Su.
+[Settlers of Solana](https://devpost.com/software/_solanasim) was a Hack the North 2026 finalist and won Best Use of Solana there.
 
 - **What it does:** over 100 AI agents, each with its own personality, talents and appetite for risk, run an island economy. Every round they choose to fish, cut wood, craft, build a house or rest. Prices come from supply and demand, agents can take out collateralized loans and get foreclosed on, and every trade settles on Solana.
 - **How it looks:** a 3D island in Three.js, plus a dashboard tracking GDP, inflation, employment, wellbeing, inequality and credit, with 55 dials (35 adjustable live) that let you trigger forest fires or poisoned fish.
