@@ -4,9 +4,11 @@ import type {
   Face2D,
   Hand2D,
   Observation,
+  PerceivedBody,
   PerceivedFace,
   PerceivedHand,
   Perception,
+  Pose2D,
   UV,
 } from "./types";
 
@@ -63,6 +65,24 @@ import type {
  *      along the eye ray is EYE_SPAN · sqrt(1 − (axis·ray)²), floored at 0.5×).
  *   Measured depth is rejected if > 40 % off the angular estimate. Clamped to 0.3..8 m.
  *   gaze = gazeCamera rotated into world space.
+ *   Also carries the image-space uv (eye midpoint), box and mouthOpen through for people.ts.
+ *
+ * BODIES (liftBody). Torso depth Zt (forward distance of the mean torso joint plane):
+ *   1. size: the same full-perspective least squares as the hands (solveHandCenter) over the
+ *      visible (>= 0.5) torso joints nose / shoulders / hips and MediaPipe's hip-centred metric
+ *      world landmarks; Zt = Zc + mean(w.z of those joints).
+ *   2. measured: cam.depthAt median over 3-6 points inside the torso (pulled 30 % from each
+ *      shoulder/hip towards the torso centre so they do not land on the background) + BODY_SURFACE
+ *      (the sensor sees the front of the chest, the joint plane is ~9 cm behind it). Used only
+ *      when it agrees with (1) within 40 %, or when (1) failed.
+ *   Size-based depth is blended with the previous torso of the same id like the hands. Every
+ *   joint then sits on its own image ray at Zt + (w.z_i - mean w.z) (offset clamped to ±0.8 m).
+ *   Joints with visibility < 0.5 are null. Rejected: fewer than 3 torso joints, no shoulder.
+ *
+ * Hands/faces/bodies come back with personId = null and people = []: src/vision/people.ts
+ * attributes them. Hand and face depth are deliberately NOT cross-checked against a matched body
+ * here (a pose-lite world scale is a coarser ruler than the hand/eye-corner span; people.ts
+ * only compares them).
  */
 
 export type HandPlacement = "rays" | "rigid";
@@ -114,10 +134,28 @@ export function liftObservation(
   }
   const faces: PerceivedFace[] = [];
   for (const f of obs.faces) {
+    if (obs.facesStale) {
+      // Repeated detection: its image position belongs to an older camera pose, keep the old lift.
+      const old = prev?.faces.find((q) => q.id === f.id);
+      if (old) faces.push(old);
+      continue;
+    }
     const p = liftFace(f, ctx);
     if (p) faces.push(p);
   }
-  return { hands, faces };
+  const bodies: PerceivedBody[] = [];
+  for (const b of obs.bodies ?? []) {
+    if (obs.bodiesStale) {
+      const old = prev?.bodies?.find((q) => q.id === b.id);
+      if (old) bodies.push(old);
+      continue;
+    }
+    const before = prev?.bodies?.find((q) => q.id === b.id);
+    const recent = before?.torso && dtSincePrev > 0 && dtSincePrev <= VEL_MAX_DT ? before.torso : undefined;
+    const p = liftBody(b, ctx, recent);
+    if (p) bodies.push(p);
+  }
+  return { hands, faces, bodies, people: [], cameraPosition: ctx.origin.clone() };
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -137,7 +175,7 @@ export interface Ctx {
 
 /** Exported for tests. */
 export function makeCtx(cam: CameraModel): Ctx {
-  const origin = new THREE.Vector3();
+  const origin = new THREE.Vector3().setFromMatrixPosition(cam.cameraToWorld);
   const forward = new THREE.Vector3(0, 0, -1).transformDirection(cam.cameraToWorld);
   const worldToCamera = new THREE.Matrix4().copy(cam.cameraToWorld).invert();
   const ctx: Ctx = {
@@ -404,7 +442,15 @@ export function liftHand(
     distance,
     nearCamera: distance < NEAR_CAMERA,
     age: 0,
+    personId: null,
+    uv: palmUV(h.landmarks),
   };
+}
+
+function palmUV(lm: readonly UV[]): UV {
+  let u = 0, v = 0;
+  for (const i of PALM_IDX) { u += lm[i].u; v += lm[i].v; }
+  return { u: u / PALM_IDX.length, v: v / PALM_IDX.length };
 }
 
 function liftFace(f: Face2D, ctx: Ctx): PerceivedFace | null {
@@ -450,5 +496,118 @@ function liftFace(f: Face2D, ctx: Ctx): PerceivedFace | null {
   const g = new THREE.Vector3(f.gazeCamera.x, f.gazeCamera.y, f.gazeCamera.z);
   if (g.lengthSq() < 1e-12) return null;
   const gaze = g.transformDirection(ctx.cam.cameraToWorld); // normalises
-  return { id: f.id, confidence: f.score, head, gaze, age: 0 };
+  return {
+    id: f.id,
+    confidence: f.score,
+    head,
+    gaze,
+    age: 0,
+    personId: null,
+    mouthOpen: f.mouthOpen,
+    uv: { u: f.eyes.u, v: f.eyes.v },
+    box: { u0: f.box.u0, v0: f.box.v0, u1: f.box.u1, v1: f.box.v1 },
+  };
+}
+
+const BODY_VIS = 0.5;
+const BODY_SURFACE = 0.09;
+const BODY_MIN_DEPTH = 0.3;
+const BODY_MAX_DEPTH = 8;
+const BODY_JOINT_DZ = 0.8;
+const BODY_MIN_SPAN = 0.02; // tangent-plane span below which the size solve is degenerate
+const P_NOSE = 0, P_LS = 11, P_RS = 12, P_LW = 15, P_RW = 16, P_LH = 23, P_RH = 24;
+const TORSO_SIZE_IDX = [P_NOSE, P_LS, P_RS, P_LH, P_RH] as const;
+const depthScratch: number[] = [];
+
+/** Exported for tests. */
+export function liftBody(b: Pose2D, ctx: Ctx, prevTorso?: THREE.Vector3): PerceivedBody | null {
+  const lm = b.landmarks, w = b.world, vis = b.visibility;
+  if (lm.length < 33 || w.length < 33 || vis.length < 33) return null;
+  const seen = (i: number) => vis[i] >= BODY_VIS;
+  if (!seen(P_LS) && !seen(P_RS)) return null;
+
+  // Size-based torso depth (least squares over the visible torso joints).
+  const sx: number[] = [], sy: number[] = [], sw: { x: number; y: number; z: number }[] = [];
+  const r = new THREE.Vector3();
+  let zt = 0;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const i of TORSO_SIZE_IDX) {
+    if (!seen(i)) continue;
+    ctx.camRay(lm[i], r);
+    if (!(r.z < -1e-3)) continue;
+    const x = r.x / -r.z, y = r.y / -r.z;
+    sx.push(x); sy.push(y); sw.push(w[i]);
+    zt += w[i].z;
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  if (sx.length < 3) return null;
+  zt /= sx.length;
+  const sol = Math.max(maxX - minX, maxY - minY) >= BODY_MIN_SPAN ? solveHandCenter(sx, sy, sw) : null;
+  let Zt: number | null = sol ? sol.Z + zt : null;
+  let measuredUsed = false;
+
+  // Measured torso depth: points inside the torso, pulled towards its centre.
+  if (ctx.cam.depthAt) {
+    let cu = 0, cv = 0, cn = 0;
+    for (const i of [P_LS, P_RS, P_LH, P_RH]) if (seen(i)) { cu += lm[i].u; cv += lm[i].v; cn++; }
+    cu /= cn; cv /= cn;
+    depthScratch.length = 0;
+    const tap = (u: number, v: number) => {
+      const z = depthAt(ctx, u, v);
+      if (z != null) depthScratch.push(z + BODY_SURFACE);
+    };
+    tap(cu, cv);
+    for (const i of [P_LS, P_RS, P_LH, P_RH]) if (seen(i)) tap(lm[i].u + 0.3 * (cu - lm[i].u), lm[i].v + 0.3 * (cv - lm[i].v));
+    if (seen(P_LS) && seen(P_RS)) tap((lm[P_LS].u + lm[P_RS].u) / 2, (lm[P_LS].v + lm[P_RS].v) / 2);
+    const measured = depthScratch.length >= 3 ? median(depthScratch) : null;
+    if (measured != null && (Zt == null || Math.abs(measured - Zt) / Zt <= DEPTH_AGREEMENT)) {
+      Zt = measured;
+      measuredUsed = true;
+    }
+  }
+  if (Zt == null) return null;
+  if (!measuredUsed && prevTorso) {
+    const before = new THREE.Vector3().subVectors(prevTorso, ctx.origin).dot(ctx.forward);
+    if (before > 0 && Math.abs(Zt - before) < DEPTH_SMOOTH_BAND * Zt) Zt += (before - Zt) * (1 - DEPTH_SMOOTH);
+  }
+  Zt = THREE.MathUtils.clamp(Zt, BODY_MIN_DEPTH, BODY_MAX_DEPTH);
+
+  const place = (i: number): THREE.Vector3 | null => {
+    if (!seen(i)) return null;
+    const ray = ctx.camRay(lm[i]);
+    if (!(ray.z < -1e-3)) return null;
+    const dz = THREE.MathUtils.clamp(w[i].z - zt, -BODY_JOINT_DZ, BODY_JOINT_DZ);
+    const z = Math.max(0.05, Zt! + dz);
+    return ray.multiplyScalar(z / -ray.z).applyMatrix3(ctx.rot).add(ctx.origin);
+  };
+  const uvOf = (i: number): UV | null => (seen(i) ? { u: lm[i].u, v: lm[i].v } : null);
+
+  const ls = place(P_LS), rs = place(P_RS), lh = place(P_LH), rh = place(P_RH);
+  const torso = new THREE.Vector3();
+  let tu = 0, tv = 0, tn = 0;
+  const addTorso = (p: THREE.Vector3 | null, i: number) => {
+    if (!p) return;
+    torso.add(p); tu += lm[i].u; tv += lm[i].v; tn++;
+  };
+  addTorso(ls, P_LS); addTorso(rs, P_RS);
+  if (lh && rh) { addTorso(lh, P_LH); addTorso(rh, P_RH); }
+  if (tn === 0) return null;
+  torso.divideScalar(tn);
+
+  return {
+    id: b.id,
+    confidence: b.score,
+    age: 0,
+    nose: place(P_NOSE),
+    leftShoulder: ls,
+    rightShoulder: rs,
+    leftWrist: place(P_LW),
+    rightWrist: place(P_RW),
+    torso,
+    torsoUV: { u: tu / tn, v: tv / tn },
+    leftWristUV: uvOf(P_LW),
+    rightWristUV: uvOf(P_RW),
+    noseUV: uvOf(P_NOSE),
+  };
 }

@@ -691,6 +691,10 @@ body {
   color: var(--on-accent);
 }
 
+.ar-tools {
+  justify-content: flex-end; /* its own row: next to three trick buttons the small buttons squeezed the labels on 360-390px screens */
+}
+
 .btn-small {
   flex: none;
   min-width: 0;
@@ -709,6 +713,53 @@ body {
 
 .btn-exit {
   font-size: 18px;
+}
+
+/* Voice: 🎤 toggle with a pulse while listening; chip shows the last heard phrase and command. */
+.btn-voice[hidden] {
+  display: none;
+}
+
+.btn-voice[data-state="listening"] {
+  animation: voice-pulse 1.4s ease-out infinite;
+}
+
+.btn-voice[data-state="starting"] {
+  opacity: 0.7;
+}
+
+.btn-voice[data-state="armed"] {
+  border-color: var(--accent);
+}
+
+.btn-voice[data-state="denied"] {
+  opacity: 0.5;
+  text-decoration: line-through;
+}
+
+@keyframes voice-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(255, 160, 51, 0.7);
+  }
+  100% {
+    box-shadow: 0 0 0 14px rgba(255, 160, 51, 0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-voice[data-state="listening"] {
+    animation: none;
+    box-shadow: 0 0 0 3px rgba(255, 160, 51, 0.7);
+  }
+}
+
+.voice-chip {
+  font-style: italic;
+}
+
+.voice-chip[hidden],
+.voice-hint[hidden] {
+  display: none;
 }
 
 .vision-canvas {
@@ -784,6 +835,13 @@ html.camera-active body {
     flex-direction: row;
     flex-wrap: wrap;
     justify-content: flex-end;
+  }
+  .ar-tools {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: auto;
+    flex-direction: row;
   }
   .ar-tricks .btn-trick {
     flex: 1 1 100%;

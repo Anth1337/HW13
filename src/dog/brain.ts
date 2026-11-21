@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { dogGaitInfo } from "../models/dog";
-import type { PerceivedFace, PerceivedHand } from "../vision/types";
+import type { PerceivedFace, PerceivedHand, PerceivedPerson } from "../vision/types";
 import { TRICK_DURATION } from "./types";
 import type { DogBrain, DogCharacter, DogCommand, DogMode, DogZones, TrickKind } from "./types";
 
@@ -12,6 +12,7 @@ import type { DogBrain, DogCharacter, DogCommand, DogMode, DogZones, TrickKind }
  *
  * Each frame:
  *   1. perception bookkeeping (petting zones, engaged hand, eye-contact partner)
+ *      — organised per PERSON: hands/faces carry a personId (null = anonymous, keyed by its own id)
  *   2. behaviour picks ONE locomotion goal (`want`: target point / speed / facing), by priority:
  *      trick > hand > come / goTo > mode (follow / free / stay)
  *   3. postures (sit / lie / stand-up-before-walking) and locomotion steer the anchor
@@ -73,6 +74,23 @@ const SWITCH_LOOK_AWAY = 0.35;
 const VANISH_AGE = 1;
 const FORGET_AFTER = 2;
 
+// Several people (hysteresis: nothing below may flip the dog between people frame to frame).
+const ENGAGE_COMMIT = 1.5; // s a hand stays engaged before another person's hand may take over
+const ENGAGE_SWITCH_RATIO = 0.6; // ...and only if its palm is this much closer to the nose (or a higher interest level)
+const ENGAGE_HOLD = 0.5; // s the engaged hand may drop out before any other hand is considered
+const ENGAGE_OWNER_BIAS = 0.6; // distance multiplier favouring the engaged / petting person when picking a hand
+const LOST_FACE_KEEP = 1.5; // s the partner's person is still looked at (head / body) after their face is lost
+const PEER_GLANCE_MIN = 3; // s between glances at a second person who is also looking at the dog
+const PEER_GLANCE_MAX = 6;
+const PEER_GLANCE_LEN_MIN = 0.9;
+const PEER_GLANCE_LEN_MAX = 1.5;
+const HEAR_ATTEND_S = 2; // look at whoever spoke for this long
+const COMMAND_ATTEND_S = 3; // ...and at whoever gave a command
+const LISTEN_STATUS_S = 1.2;
+const PERSON_MAX_AGE = 2; // s: a person older than this is not "currently known" (come target, master, speaker head)
+const MASTER_FORGET = 8; // s: the follow master unseen this long → back to following the phone
+const NO_KEY = -1e9;
+
 const EXCITE_BASE = 0.25;
 const FAST_FORWARD_S = 0.4; // a queued trick fast-forwards the running one to its end this quickly
 
@@ -110,6 +128,12 @@ type Posture = "stand" | "sit" | "lie";
 
 interface PetState {
   active: boolean;
+  owner: number; // person key of the session (or of the current dwell candidate)
+  ownerHand: number; // id of the hand that set `owner`: the same hand stays the owner if its person key changes (personId assigned / lost)
+  hit: boolean; // this frame
+  hitKey: number;
+  hitHand: number;
+  hitFresh: boolean;
   dwellStart: number | null;
   dets: number;
   lastHit: number;
@@ -117,9 +141,13 @@ interface PetState {
   hitPoint: THREE.Vector3; // this frame's
 }
 
-interface FaceTrack {
-  id: number;
+/** Eye-contact state of one PERSON (key = personId, or a negative key for an anonymous face). */
+interface PersonTrack {
+  key: number;
+  faceId: number;
+  stamp: number;
   seen: boolean;
+  age: number;
   lastSeen: number;
   head: THREE.Vector3;
   dist: number;
@@ -128,6 +156,14 @@ interface FaceTrack {
   lastLook: number;
   prevAge: number;
   lookDets: number;
+}
+
+/** Person key of a hand / face: its personId, else a negative key unique to that detection id. */
+function handKey(h: PerceivedHand): number {
+  return h.personId !== null ? h.personId : -1 - h.id * 2;
+}
+function faceKey(f: PerceivedFace): number {
+  return f.personId !== null ? f.personId : -2 - f.id * 2;
 }
 
 export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorYIn: number): DogBrain {
@@ -231,14 +267,19 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
 
   // ---- Hands / petting ----
   const pets: Record<Zone, PetState> = {
-    head: { active: false, dwellStart: null, dets: 0, lastHit: -Infinity, point: new THREE.Vector3(), hitPoint: new THREE.Vector3() },
-    body: { active: false, dwellStart: null, dets: 0, lastHit: -Infinity, point: new THREE.Vector3(), hitPoint: new THREE.Vector3() },
+    head: newPetState(),
+    body: newPetState(),
   };
+  const petHit = new THREE.Vector3(); // scratch candidate hit point
   const petListeners = new Set<(zone: Zone, worldPoint: THREE.Vector3) => void>();
   const handPrevAge = new Map<number, number>(); // distinct-detection bookkeeping
   let freshMask = 0; // bit i = hands[i] is a new detection this frame (first 31 hands)
 
   let engagedId: number | null = null;
+  let engagedKey = NO_KEY; // person of the engaged hand
+  let engagedSince = 0;
+  let engagedLvl = 0;
+  let engagedDist = Infinity; // palm → nose
   let engagedLastOk = -Infinity;
   let engagedSeen = false; // the engaged hand is in this frame's fresh perception
   let engagedSpeed = 0;
@@ -246,10 +287,36 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
   const engagedPalm = new THREE.Vector3();
   let handSniffing = false;
 
-  // ---- Faces ----
-  const faceTracks = new Map<number, FaceTrack>();
-  const facePool: FaceTrack[] = [];
-  let partner: number | null = null;
+  // ---- People / faces ----
+  const tracks = new Map<number, PersonTrack>();
+  const trackPool: PersonTrack[] = [];
+  let frameNo = 0;
+  let lastPeople: readonly PerceivedPerson[] | null = null;
+  let partner = NO_KEY; // person key of the eye-contact partner
+  let lastPartnerKey = NO_KEY;
+  let lastPartnerAt = -Infinity;
+  let newPersonUntil = 0; // status: "Looking at someone new"
+  let petOwnerKey = NO_KEY; // person petting right now
+  let attention: number | null = null;
+
+  // Spoken to: the dog looks at the speaker for a while (hearVoice / command(cmd, by)).
+  let speakerId: number | null = null; // null = the phone holder
+  let speakerUntil = 0;
+  let listenUntil = 0;
+
+  // Follow master: the person "come" / "follow" was given by (null = the phone holder / viewer).
+  let masterId: number | null = null;
+  let masterLastSeen = 0;
+  let masterVisible = false; // the master is known: seen now, or (up to MASTER_FORGET) at masterX/Z where last seen
+  let masterX = 0;
+  let masterZ = 0;
+  let tgtX = 0; // follow target (floor x/z): the visible master, else the viewer
+  let tgtZ = 0;
+
+  // Glances at a second person who also looks at the dog.
+  let peerKey = NO_KEY;
+  let peerUntil = 0;
+  let nextPeerGlance = rand(PEER_GLANCE_MIN, PEER_GLANCE_MAX);
 
   // Glances at the user.
   let glanceLeft = 0;
@@ -279,6 +346,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
       pets[z].dwellStart = null;
       pets[z].dets = 0;
     }
+    petOwnerKey = NO_KEY;
   }
 
   function startTrick(kind: TrickKind): void {
@@ -296,11 +364,32 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     autoPosture = auto && p !== "stand";
   }
 
-  function viewerFloorX(): number {
-    return viewerW.x;
+  function newPetState(): PetState {
+    return {
+      active: false, owner: NO_KEY, ownerHand: -1, hit: false, hitKey: NO_KEY, hitHand: -1, hitFresh: false, dwellStart: null, dets: 0,
+      lastHit: -Infinity, point: new THREE.Vector3(), hitPoint: new THREE.Vector3(),
+    };
   }
-  function viewerFloorZ(): number {
-    return viewerW.z;
+
+  function findPerson(id: number): PerceivedPerson | null {
+    const ps = lastPeople;
+    if (ps) for (let i = 0; i < ps.length; i++) if (ps[i].id === id) return ps[i];
+    return null;
+  }
+
+  /** Where a person's head is (tracked person, else the last face seen), into out. false = unknown. */
+  function personHead(id: number, out: THREE.Vector3): boolean {
+    const p = findPerson(id);
+    if (p && p.age < PERSON_MAX_AGE) {
+      out.copy(p.head ?? p.position);
+      return true;
+    }
+    const t = tracks.get(id);
+    if (t && now - t.lastSeen < LOST_FACE_KEEP) {
+      out.copy(t.head);
+      return true;
+    }
+    return false;
   }
 
   function setWant(x: number, z: number, vMax: number, arrive: number): void {
@@ -316,17 +405,17 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     want.fz = z;
   }
 
-  /** Pushes a nose target (x, z) out of the viewer keep-out circle; result in tmp.x / tmp.z. */
+  /** Pushes a nose target (x, z) out of the camera keep-out circle; result in tmp.x / tmp.z. */
   function keepOutNose(x: number, z: number, radius: number): void {
-    const dx = x - viewerFloorX();
-    const dz = z - viewerFloorZ();
+    const dx = x - viewerW.x;
+    const dz = z - viewerW.z;
     const d = Math.hypot(dx, dz);
     if (d >= radius) {
       tmp.set(x, 0, z);
     } else if (d > 1e-4) {
-      tmp.set(viewerFloorX() + (dx / d) * radius, 0, viewerFloorZ() + (dz / d) * radius);
+      tmp.set(viewerW.x + (dx / d) * radius, 0, viewerW.z + (dz / d) * radius);
     } else {
-      tmp.set(viewerFloorX() + Math.sin(yaw) * radius, 0, viewerFloorZ() + Math.cos(yaw) * radius);
+      tmp.set(viewerW.x + Math.sin(yaw) * radius, 0, viewerW.z + Math.cos(yaw) * radius);
     }
   }
 
@@ -377,33 +466,57 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     return best < Infinity;
   }
 
+  /** Tests one hand against a zone for the session `s`; a session already running only listens to its owner. */
+  function considerZone(s: PetState, z: THREE.Sphere, h: PerceivedHand, key: number, fresh: boolean, excludeMuzzle: boolean): boolean {
+    const ownHand = h.id === s.ownerHand;
+    if (s.active && key !== s.owner && !ownHand) return false;
+    if (!testZone(z, h, petHit, excludeMuzzle)) return false;
+    if (ownHand && key !== s.owner) s.owner = key; // the owner's hand got (or lost) a personId
+    if (!s.hit || (key === s.owner && s.hitKey !== s.owner)) {
+      s.hit = true;
+      s.hitKey = key;
+      s.hitHand = h.id;
+      s.hitFresh = fresh;
+      s.hitPoint.copy(petHit);
+    } else if (key === s.hitKey) {
+      s.hitFresh = s.hitFresh || fresh;
+    }
+    return true;
+  }
+
   function updatePetting(hands: readonly PerceivedHand[], dt: number): void {
     dog.getZones(zones);
-    let headHit = false;
-    let bodyHit = false;
-    let headFresh = false;
-    let bodyFresh = false;
+    pets.head.hit = false;
+    pets.body.hit = false;
     for (let i = 0; i < hands.length; i++) {
       const h = hands[i];
       if (h.age >= HAND_MAX_AGE || h.confidence < HAND_MIN_CONF) continue;
       const fresh = i < 31 && (freshMask & (1 << i)) !== 0;
+      const key = handKey(h);
       // Head wins over body when a hand overlaps both.
       // The muzzle exclusion only gates the START of a head session (the head lifts into the hand).
-      if (!headHit && testZone(zones.head, h, pets.head.hitPoint, !pets.head.active)) {
-        headHit = true;
-        headFresh = headFresh || fresh;
-      } else if (!bodyHit && testZone(zones.body, h, pets.body.hitPoint, false)) {
-        bodyHit = true;
-        bodyFresh = bodyFresh || fresh;
+      if (!considerZone(pets.head, zones.head, h, key, fresh, !pets.head.active)) {
+        // A hand in the head zone that was only refused because someone else owns the head session is not a body pat.
+        const refused = pets.head.active && testZone(zones.head, h, petHit, false);
+        if (!refused) considerZone(pets.body, zones.body, h, key, fresh, false);
       }
     }
-    stepZone("head", headHit, headFresh, dt);
-    stepZone("body", bodyHit, bodyFresh, dt);
+    stepZone("head", dt);
+    stepZone("body", dt);
+    petOwnerKey = pets.head.active ? pets.head.owner : pets.body.active ? pets.body.owner : NO_KEY;
   }
 
-  function stepZone(zone: Zone, hit: boolean, fresh: boolean, dt: number): void {
+  function stepZone(zone: Zone, dt: number): void {
     const s = pets[zone];
+    const hit = s.hit;
+    const fresh = s.hitFresh;
     if (hit) {
+      // A different person's hand took over an unconfirmed candidate: start the dwell afresh.
+      if (!s.active && s.hitKey !== s.owner) {
+        s.owner = s.hitKey;
+        s.dwellStart = null;
+      }
+      s.ownerHand = s.hitHand;
       if (s.dwellStart === null || now - s.lastHit > PET_DROPOUT) {
         s.dwellStart = now;
         s.dets = 0;
@@ -445,70 +558,102 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     return ang < 80 * DEG || d < 0.5 ? 2 : 0;
   }
 
+  function engage(h: PerceivedHand, lvl: number): void {
+    const key = handKey(h);
+    if (key !== engagedKey && h.id !== engagedId) engagedSince = now;
+    engagedId = h.id;
+    engagedKey = key;
+    engagedSeen = true;
+    engagedLastOk = now;
+    engagedLvl = lvl;
+    engagedPalm.copy(h.palm);
+    engagedSpeed = h.velocity.length();
+    engagedDist = h.palm.distanceTo(nose);
+    engagedNear = lvl === 1;
+  }
+
+  /**
+   * One engaged (person, hand) at a time. The engaged hand is kept while it still qualifies
+   * (relaxed thresholds); another person's hand only takes over after ENGAGE_COMMIT, never during a
+   * petting session, and only when clearly better (higher interest level, or much nearer the nose).
+   */
   function updateEngagement(hands: readonly PerceivedHand[]): void {
     engagedSeen = false;
-    // Keep the current hand while it still qualifies (relaxed).
     if (engagedId !== null) {
       for (const h of hands) {
         if (h.id !== engagedId) continue;
         const lvl = handInterest(h, true);
         if (lvl > 0) {
-          engagedSeen = true;
-          engagedLastOk = now;
-          engagedPalm.copy(h.palm);
-          engagedSpeed = h.velocity.length();
-          engagedNear = lvl === 1;
+          const since = engagedSince;
+          engage(h, lvl);
+          engagedSince = since;
         }
       }
-      if (!engagedSeen && now - engagedLastOk > HAND_RELEASE) engagedId = null;
+      if (!engagedSeen) {
+        const lost = now - engagedLastOk;
+        if (lost > HAND_RELEASE) {
+          engagedId = null;
+          engagedKey = NO_KEY;
+        } else if (lost < ENGAGE_HOLD) {
+          return; // brief dropout: hold the hand
+        }
+      }
     }
-    if (engagedSeen) return;
-    // Look for a (better) hand: engaging ones beat look-only ones, then the nearest to the nose.
+    const busy = petOwnerKey !== NO_KEY || pets.head.dwellStart !== null || pets.body.dwellStart !== null;
+    const challenge = engagedSeen;
+    if (challenge && (busy || now - engagedSince < ENGAGE_COMMIT)) return;
+    const focus = petOwnerKey !== NO_KEY ? petOwnerKey : engagedKey;
     let best: PerceivedHand | null = null;
     let bestLvl = 0;
     let bestD = Infinity;
     for (const h of hands) {
       const lvl = handInterest(h, false);
       if (lvl === 0) continue;
-      const d = h.palm.distanceTo(nose);
+      const key = handKey(h);
+      let d = h.palm.distanceTo(nose);
+      if (challenge) {
+        if (key === engagedKey) continue;
+        if (!(lvl > engagedLvl || (lvl === engagedLvl && d < engagedDist * ENGAGE_SWITCH_RATIO))) continue;
+      } else if (key === focus) {
+        d *= ENGAGE_OWNER_BIAS;
+      }
       if (lvl > bestLvl || (lvl === bestLvl && d < bestD)) {
         best = h;
         bestLvl = lvl;
         bestD = d;
       }
     }
-    if (best) {
-      engagedId = best.id;
-      engagedSeen = true;
-      engagedLastOk = now;
-      engagedPalm.copy(best.palm);
-      engagedSpeed = best.velocity.length();
-      engagedNear = bestLvl === 1;
-    }
+    if (best) engage(best, bestLvl);
   }
 
-  // ---- Faces (eye contact) -----------------------------------------------------------------
+  // ---- People (eye contact) ----------------------------------------------------------------
 
   function updateFaces(faces: readonly PerceivedFace[]): void {
-    for (const t of faceTracks.values()) t.seen = false;
+    frameNo++;
     for (const f of faces) {
-      let t = faceTracks.get(f.id);
+      const key = faceKey(f);
+      let t = tracks.get(key);
       if (!t) {
-        t = facePool.pop() ?? {
-          id: 0, seen: false, lastSeen: 0, head: new THREE.Vector3(), dist: Infinity, looking: false,
-          lookStart: 0, lastLook: -Infinity, prevAge: Infinity, lookDets: 0,
+        t = trackPool.pop() ?? {
+          key: 0, faceId: 0, stamp: 0, seen: false, age: Infinity, lastSeen: 0, head: new THREE.Vector3(), dist: Infinity,
+          looking: false, lookStart: 0, lastLook: -Infinity, prevAge: Infinity, lookDets: 0,
         };
-        t.id = f.id;
+        t.key = key;
         t.looking = false;
         t.lastLook = -Infinity;
         t.prevAge = Infinity;
         t.lookDets = 0;
-        faceTracks.set(f.id, t);
+        t.stamp = 0;
+        tracks.set(key, t);
       }
+      const sameFrame = t.stamp === frameNo; // two faces of one person in one frame: merge
+      t.stamp = frameNo;
       t.seen = true;
+      t.faceId = f.id;
       const age = Math.max(0, f.age);
       const fresh = age < t.prevAge - 1e-6;
       t.prevAge = age;
+      t.age = age;
       t.lastSeen = now - age;
       t.head.copy(f.head);
       t.dist = f.head.distanceTo(eyes);
@@ -521,6 +666,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
           looking = tmp.dot(f.gaze) / (len * glen) >= (t.looking ? COS_STAY : COS_ENTER);
         }
       }
+      if (sameFrame) looking = looking || t.looking;
       if (looking && !t.looking) {
         t.lookStart = now;
         t.lookDets = 0;
@@ -529,21 +675,26 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
       t.looking = looking;
       if (looking) t.lastLook = now;
     }
-    for (const [id, t] of faceTracks) {
-      if (t.seen) continue;
+    for (const [key, t] of tracks) {
+      if (t.stamp === frameNo) continue;
+      t.seen = false;
       t.looking = false;
       if (now - t.lastSeen > FORGET_AFTER) {
-        faceTracks.delete(id);
-        facePool.push(t);
+        tracks.delete(key);
+        trackPool.push(t);
       }
     }
   }
 
-  function bestFace(except: number | null): FaceTrack | null {
-    let best: FaceTrack | null = null;
-    for (const t of faceTracks.values()) {
-      if (t.id === except || !t.looking || now - t.lookStart < CANDIDATE_DWELL) continue;
-      if (t.lookDets < MIN_DISTINCT_DETECTIONS) continue;
+  function eligible(t: PersonTrack): boolean {
+    return t.looking && now - t.lookStart >= CANDIDATE_DWELL && t.lookDets >= MIN_DISTINCT_DETECTIONS;
+  }
+
+  /** The person who has been looking at the dog longest (ties: nearest), excluding `except`. */
+  function bestCandidate(except: number): PersonTrack | null {
+    let best: PersonTrack | null = null;
+    for (const t of tracks.values()) {
+      if (t.key === except || !eligible(t)) continue;
       if (!best) {
         best = t;
         continue;
@@ -554,20 +705,112 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     return best;
   }
 
+  function setPartner(key: number): void {
+    if (key === partner) return;
+    if (key !== NO_KEY && lastPartnerKey !== NO_KEY && key !== lastPartnerKey && now - lastPartnerAt < 4) {
+      newPersonUntil = now + 1.5;
+    }
+    partner = key;
+    if (key !== NO_KEY) lastPartnerKey = key;
+  }
+
+  /** True while the partner really looks at the dog (or did a moment ago): the hand owner / speaker can be the partner without looking. */
+  function partnerLooking(): boolean {
+    const t = partner !== NO_KEY ? tracks.get(partner) : undefined;
+    return !!t && (t.looking || now - t.lastLook <= PARTNER_LOOK_AWAY);
+  }
+
+  /** Keeps the partner while they look (or looked a moment ago, or their body is still tracked). */
+  function holdsPartner(t: PersonTrack): boolean {
+    if (now - t.lastLook <= PARTNER_LOOK_AWAY) return true;
+    if (t.seen && t.age < MAX_LOOK_AGE) return false;
+    if (now - t.lastSeen > LOST_FACE_KEEP) return false;
+    const p = t.key >= 0 ? findPerson(t.key) : null;
+    return p !== null && p.age < LOST_FACE_KEEP;
+  }
+
+  /**
+   * Eye-contact partner, one at a time. Preference: the person petting / sniffing > the person who
+   * just spoke > the one looking at the dog longest > nearest. The current partner is only replaced
+   * once they have looked away (SWITCH_LOOK_AWAY) and someone else is looking, so two equally
+   * eligible people never make the dog flip back and forth.
+   */
   function updatePartner(allowed: boolean): void {
     if (!allowed) {
-      partner = null;
+      setPartner(NO_KEY);
       return;
     }
-    const p = partner !== null ? faceTracks.get(partner) : undefined;
-    if (p && now - p.lastSeen <= VANISH_AGE && now - p.lastLook <= PARTNER_LOOK_AWAY) {
+    const focus = petOwnerKey !== NO_KEY ? petOwnerKey : engagedId !== null ? engagedKey : NO_KEY;
+    if (focus !== NO_KEY) {
+      const t = tracks.get(focus);
+      if (t && now - t.lastSeen <= VANISH_AGE) {
+        setPartner(focus); // lastLook stays real: being the focus is not eye contact (see partnerLooking)
+      } else {
+        setPartner(NO_KEY);
+      }
+      return;
+    }
+    if (now < speakerUntil && speakerId !== null) {
+      const t = tracks.get(speakerId);
+      if (t && now - t.lastSeen <= VANISH_AGE) {
+        setPartner(speakerId);
+        return;
+      }
+    }
+    const p = partner !== NO_KEY ? tracks.get(partner) : undefined;
+    if (p && holdsPartner(p)) {
       if (p.looking) return;
-      const other = bestFace(p.id);
-      if (other && now - p.lastLook >= SWITCH_LOOK_AWAY) partner = other.id;
+      if (now - p.lastLook >= SWITCH_LOOK_AWAY) {
+        const other = bestCandidate(p.key);
+        if (other) setPartner(other.key);
+      }
       return;
     }
-    const c = bestFace(null);
-    partner = c ? c.id : null;
+    const c = bestCandidate(NO_KEY);
+    setPartner(c ? c.key : NO_KEY);
+  }
+
+  /** While idle with a partner, now and then glance at a second looker and come back (the partner never changes). */
+  function updatePeerGlance(idle: boolean): void {
+    if (peerKey !== NO_KEY) {
+      const t = tracks.get(peerKey);
+      if (!idle || !t || !t.looking || peerKey === partner || now >= peerUntil) {
+        peerKey = NO_KEY;
+        nextPeerGlance = now + rand(PEER_GLANCE_MIN, PEER_GLANCE_MAX);
+      }
+      return;
+    }
+    if (!idle || partner === NO_KEY || now < nextPeerGlance) return;
+    const pt = tracks.get(partner);
+    if (!pt || !pt.looking) return;
+    const other = bestCandidate(partner);
+    if (other) {
+      peerKey = other.key;
+      peerUntil = now + rand(PEER_GLANCE_LEN_MIN, PEER_GLANCE_LEN_MAX);
+    } else {
+      nextPeerGlance = now + 1;
+    }
+  }
+
+  /** Someone spoke: look at them for `seconds` (null = the phone holder). */
+  function attend(id: number | null, seconds: number): void {
+    const until = now + seconds;
+    speakerUntil = id === speakerId && speakerUntil > now ? Math.max(speakerUntil, until) : until;
+    speakerId = id;
+    listenUntil = now + LISTEN_STATUS_S;
+    excitement = Math.max(excitement, 0.65);
+  }
+
+  function setMaster(id: number | null): void {
+    const p = id !== null ? findPerson(id) : null;
+    if (p && !p.isViewer) {
+      masterId = id;
+      masterLastSeen = now;
+      masterX = p.position.x;
+      masterZ = p.position.z;
+    } else {
+      masterId = null;
+    }
   }
 
   // ---- Behaviour ---------------------------------------------------------------------------
@@ -591,8 +834,8 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     want.move = false;
     want.face = false;
     handSniffing = false;
-    const ux = viewerFloorX();
-    const uz = viewerFloorZ();
+    const ux = tgtX; // follow target: the master person while visible, else the phone
+    const uz = tgtZ;
     const ax = anchor.position.x;
     const az = anchor.position.z;
 
@@ -666,14 +909,24 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     // 3. come / goTo.
     if (comeActive) {
       activity = "come";
-      let fx = viewerFwd.x;
-      let fz = viewerFwd.z;
-      let fl = Math.hypot(fx, fz);
-      if (fl < 0.2) {
-        // Looking straight down: come from the dog's side.
+      let fx: number;
+      let fz: number;
+      let fl: number;
+      if (masterVisible) {
+        // Someone else called: approach along the line from them to the dog (no facing known).
         fx = ax - ux;
         fz = az - uz;
         fl = Math.hypot(fx, fz);
+      } else {
+        fx = viewerFwd.x;
+        fz = viewerFwd.z;
+        fl = Math.hypot(fx, fz);
+        if (fl < 0.2) {
+          // Looking straight down: come from the dog's side.
+          fx = ax - ux;
+          fz = az - uz;
+          fl = Math.hypot(fx, fz);
+        }
       }
       if (fl < 1e-4) {
         fx = 0;
@@ -734,14 +987,14 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     }
     if (mode === "free") {
       activity = "free";
-      freeBehaviour(ux, uz, du);
+      freeBehaviour(viewerW.x, viewerW.z, Math.hypot(ax - viewerW.x, az - viewerW.z));
       return;
     }
     // stay
     activity = "stay";
     if (postureCmd === "stand") {
       // Stand-stay: may turn to face the user, nothing else.
-      idleBehaviour(ux, uz, false);
+      idleBehaviour(viewerW.x, viewerW.z, false);
     }
   }
 
@@ -999,7 +1252,10 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
   function chooseLook(dt: number): number {
     if (activity === "trick") return 0;
     if (activity === "petHead") {
-      desiredW.copy(viewerW);
+      // Look at the person petting (a second person's pat too); the phone holder when that is unknown.
+      const petter = petOwnerKey >= 0 ? findPerson(petOwnerKey) : null;
+      if (petter && petter.head && !petter.isViewer && petter.age < PERSON_MAX_AGE) desiredW.copy(petter.head);
+      else desiredW.copy(viewerW);
       return 0.45;
     }
     if (activity === "petBody") {
@@ -1019,15 +1275,30 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
       }
       return 1;
     }
-    const p = partner !== null ? faceTracks.get(partner) : undefined;
+    // Someone just spoke: look at them (the phone holder when unknown).
+    if (now < speakerUntil) {
+      if (speakerId !== null && personHead(speakerId, desiredW)) return 1;
+      desiredW.copy(viewerW);
+      return 0.8;
+    }
+    if (peerKey !== NO_KEY) {
+      const t = tracks.get(peerKey);
+      if (t) {
+        desiredW.copy(t.head);
+        return 1;
+      }
+    }
+    const p = partner !== NO_KEY ? tracks.get(partner) : undefined;
     if (p) {
-      desiredW.copy(p.head);
+      // Face lost for a moment but the person is still tracked: keep looking at their head / body.
+      const faceFresh = p.seen && p.age < MAX_LOOK_AGE;
+      if (faceFresh || p.key < 0 || !personHead(p.key, desiredW)) desiredW.copy(p.head);
       nextGlance = now + rand(2, 5);
       return 1;
     }
-    // Walking somewhere: look where it's going (idle), except come → look at the user.
+    // Walking somewhere: look where it's going (idle), except come → look at the caller.
     if (activity === "come") {
-      desiredW.copy(viewerW);
+      if (!(masterVisible && masterId !== null && personHead(masterId, desiredW))) desiredW.copy(viewerW);
       return 0.7;
     }
     if (v > V_WALK * 1.2) return 0;
@@ -1069,13 +1340,14 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
     }
     if (postureCmd === "sit" && sitLin > 0.5) return "Sitting";
     if (postureCmd === "lie" && lieLin > 0.5) return "Lying down";
-    if (partner !== null) return "Making eye contact";
+    if (now < listenUntil) return "Listening";
+    if (partner !== NO_KEY && partnerLooking()) return now < newPersonUntil ? "Looking at someone new" : "Making eye contact";
     if (activity === "free") {
       if (freeActivity === "sniff" || controls.sniff > 0.5) return "Sniffing around";
       return `${name} is exploring`;
     }
     if (activity === "stay") return `${name} is staying`;
-    return `${name} is following you`;
+    return masterVisible ? `${name} is following someone` : `${name} is following you`;
   }
 
   // ---------------------------------------------------------------------------------------
@@ -1102,6 +1374,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
       viewerW.copy(viewer.position);
       viewerFwd.copy(viewer.forward);
       const hands = perception.hands;
+      lastPeople = perception.people ?? null;
 
       // External code may have moved the anchor (placement): keep yaw in sync.
       if (Math.abs(wrap(anchor.rotation.y - yaw)) > 1e-6) yaw = anchor.rotation.y;
@@ -1133,15 +1406,40 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
         startTrick(kq);
       }
 
-      // ---- Perception
+      // ---- Follow target: the master person while visible, else the phone
+      tgtX = viewerW.x;
+      tgtZ = viewerW.z;
+      masterVisible = false;
+      if (masterId !== null) {
+        const mp = findPerson(masterId);
+        if (mp && mp.age < PERSON_MAX_AGE) {
+          masterX = mp.position.x;
+          masterZ = mp.position.z;
+          masterLastSeen = now - mp.age;
+        }
+        if (now - masterLastSeen > MASTER_FORGET) {
+          masterId = null;
+        } else {
+          // Out of sight for a moment: keep going to where they were instead of snapping to the phone.
+          tgtX = masterX;
+          tgtZ = masterZ;
+          masterVisible = true;
+        }
+      }
+
+      // ---- Perception (per person)
       updateHandsBookkeeping(hands);
       updatePetting(hands, dt);
       updateEngagement(hands);
       updateFaces(perception.faces);
-      updatePartner(engagedId === null && !pets.head.active && !pets.body.active && v < V_WALK * 1.2);
+      updatePartner(v < V_WALK * 1.2);
+      if (partner !== NO_KEY) lastPartnerAt = now;
 
       // ---- Behaviour → movement
       chooseBehaviour();
+      updatePeerGlance(
+        (activity === "follow" || activity === "free" || activity === "stay") && v < 0.1 && now >= speakerUntil,
+      );
       updatePostures(dt);
       updateLocomotion(dt);
       if (activity === "come" && arrived) comeFacing = true;
@@ -1197,15 +1495,31 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
       let exT = EXCITE_BASE;
       if (activity === "follow" && v > V_TROT * 0.9) exT = 0.6;
       if (engagedId !== null && !engagedNear) exT = 0.7;
+      if (now < listenUntil) exT = Math.max(exT, 0.6);
       if (headOn || bodyOn) exT = 0.95;
       if (trickRunning) exT = 1;
       excitement = approach(excitement, exT, dt, exT > excitement ? 0.4 : 3);
       controls.excitement = excitement;
 
+      // ---- Who the dog is attending to: hand (petting > sniffing / lure) > eye contact > follow master
+      attention = null;
+      if (petOwnerKey >= 0) attention = petOwnerKey;
+      else if (engagedId !== null && engagedKey >= 0) attention = engagedKey;
+      else if (now < speakerUntil && speakerId !== null && findPerson(speakerId)) attention = speakerId;
+      else if (peerKey >= 0 && peerKey !== partner) attention = peerKey;
+      else if (partner >= 0) attention = partner;
+      else if (masterVisible && masterId !== null && findPerson(masterId)) attention = masterId;
+
       status = computeStatus();
     },
 
-    command(cmd: DogCommand): void {
+    hearVoice(personId: number | null): void {
+      attend(personId ?? null, HEAR_ATTEND_S);
+    },
+
+    command(cmd: DogCommand, by?: number | null): void {
+      const who = by ?? null;
+      if (who !== null) attend(who, COMMAND_ATTEND_S);
       switch (cmd) {
         case "sit":
         case "lie":
@@ -1221,6 +1535,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
           setPosture("stand", false);
           break;
         case "come":
+          setMaster(who);
           comeActive = true;
           comeFacing = false;
           goToActive = false;
@@ -1228,6 +1543,7 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
           break;
         case "follow":
         case "free":
+          setMaster(cmd === "follow" ? who : null);
           mode = cmd;
           comeActive = false;
           comeFacing = false;
@@ -1296,7 +1612,11 @@ export function createDogBrain(dog: DogCharacter, anchor: THREE.Object3D, floorY
       return status;
     },
     get eyeContactWith(): number | null {
-      return partner;
+      const t = partner !== NO_KEY && partnerLooking() ? tracks.get(partner) : undefined;
+      return t ? t.faceId : null;
+    },
+    get attentionPerson(): number | null {
+      return attention;
     },
     onPetStart(fn: (zone: Zone, worldPoint: THREE.Vector3) => void): () => void {
       petListeners.add(fn);

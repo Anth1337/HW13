@@ -20,7 +20,7 @@ export type ARUI = PlayUI & {
   /** #vision-canvas — from PlayUI. */
   /** #ar-controls — everything tappable; beforexrselect is prevented on it. */
   controls: HTMLElement;
-  /** #cmd-sit, #cmd-lie, #cmd-come, #cmd-mode, #trick-rollOver, #trick-jump, #trick-spin, #btn-vision — from PlayUI. */
+  /** #cmd-sit, #cmd-lie, #cmd-come, #cmd-mode, #trick-rollOver, #trick-jump, #trick-spin, #btn-vision, #btn-voice, #voice-chip, #voice-hint — from PlayUI. */
   /** #btn-exit */
   exit: HTMLButtonElement;
 };
@@ -46,6 +46,9 @@ export function arUIFromDOM(): ARUI {
     trickJump: get<HTMLButtonElement>("trick-jump"),
     trickSpin: get<HTMLButtonElement>("trick-spin"),
     visionToggle: get<HTMLButtonElement>("btn-vision"),
+    voiceToggle: get<HTMLButtonElement>("btn-voice"),
+    voiceChip: get("voice-chip"),
+    voiceHint: get("voice-hint"),
     exit: get<HTMLButtonElement>("btn-exit"),
   };
 }

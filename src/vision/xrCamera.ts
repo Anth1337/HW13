@@ -54,7 +54,7 @@
  * Default cadence: one image per 66 ms (~15 Hz), longest side 384 px.
  */
 import * as THREE from "three";
-import type { CameraModel, XRVisionSource } from "./types";
+import type { CameraModel, DepthMap, XRVisionSource } from "./types";
 
 /** Depth-sensing init for requestSession (see header: cpu-optimized only). */
 export const DEPTH_SENSING_INIT: XRDepthStateInit = {
@@ -162,6 +162,83 @@ export function depthAtSnapshot(d: DepthSnapshot, u: number, v: number): number 
   return n > 0 ? sum / n : null;
 }
 
+/** Reusable DepthMap buffers (ring) so a 15 Hz depth stream does not allocate. Maps are valid for ~2 further snapshots. */
+export interface DepthMapPool {
+  next(width: number, height: number): DepthMapImpl;
+}
+export interface DepthMapImpl extends DepthMap {
+  data: Float32Array;
+}
+
+export function createDepthMapPool(size = 3): DepthMapPool {
+  const ring: DepthMapImpl[] = [];
+  let i = 0;
+  return {
+    next(width, height) {
+      let m = ring[i];
+      if (!m) {
+        const self: DepthMapImpl = {
+          width: 0,
+          height: 0,
+          data: new Float32Array(0),
+          at(u, v) {
+            if (!(u >= 0 && u <= 1 && v >= 0 && v <= 1)) return null;
+            const c = Math.min(self.width - 1, Math.floor(u * self.width));
+            const r = Math.min(self.height - 1, Math.floor(v * self.height));
+            const d = self.data[r * self.width + c];
+            return d > 0 ? d : null;
+          },
+        };
+        ring[i] = m = self;
+      }
+      i = (i + 1) % size;
+      if (m.data.length !== width * height) m.data = new Float32Array(width * height);
+      m.width = width;
+      m.height = height;
+      return m;
+    },
+  };
+}
+
+/**
+ * Converts a snapshot into a DepthMap in VIEW orientation (row 0 = image top) in meters along the
+ * forward axis, 0 = no data. Handles both raw formats (the snapshot already holds uint16 or
+ * float32) and the normDepthBufferFromNormView transform (nearest sample per view pixel; the
+ * map keeps the buffer's resolution, with width/height swapped for a 90 degree buffer). Done once
+ * per snapshot. Isolated invalid samples are NOT filled (a hole must stay a hole for the mask).
+ */
+export function buildDepthMap(d: DepthSnapshot, pool?: DepthMapPool): DepthMap {
+  const m = d.normDepthBufferFromNormView;
+  const rotated = Math.abs(m[0]) < Math.abs(m[4]);
+  const w = rotated ? d.height : d.width;
+  const h = rotated ? d.width : d.height;
+  const out: DepthMapImpl = pool
+    ? pool.next(w, h)
+    : (() => {
+        const p = createDepthMapPool(1);
+        return p.next(w, h);
+      })();
+  const k = d.rawValueToMeters;
+  const raw = d.data;
+  const dst = out.data;
+  const bw = d.width;
+  const bh = d.height;
+  for (let j = 0; j < h; j++) {
+    const v = (j + 0.5) / h;
+    for (let i = 0; i < w; i++) {
+      const u = (i + 0.5) / w;
+      const pw = m[3] * u + m[7] * v + m[15] || 1;
+      const x = (m[0] * u + m[4] * v + m[12]) / pw;
+      const y = (m[1] * u + m[5] * v + m[13]) / pw;
+      const col = Math.min(bw - 1, Math.max(0, Math.floor(x * bw)));
+      const row = Math.min(bh - 1, Math.max(0, Math.floor(y * bh)));
+      const meters = raw[row * bw + col] * k;
+      dst[j * w + i] = meters > 0 && meters < 100 ? meters : 0;
+    }
+  }
+  return out;
+}
+
 /**
  * Builds a snapshot CameraModel from a view's camera→world matrix (XRView.transform.matrix,
  * column-major) and projection matrix (XRView.projectionMatrix). Both arrays are copied.
@@ -170,6 +247,7 @@ export function makeCameraModel(
   viewMatrix: ArrayLike<number>,
   projectionMatrix: ArrayLike<number>,
   depth: DepthSnapshot | null = null,
+  depthMaps?: DepthMapPool,
 ): CameraModel {
   const camToWorld = new THREE.Matrix4().fromArray(Array.from(viewMatrix));
   const projInv = new THREE.Matrix4().fromArray(Array.from(projectionMatrix)).invert();
@@ -186,7 +264,15 @@ export function makeCameraModel(
       outDir.copy(tmp).normalize().transformDirection(camToWorld);
     },
   };
-  if (depth) cam.depthAt = (u, v) => depthAtSnapshot(depth, u, v);
+  if (depth) {
+    cam.depthAt = (u, v) => depthAtSnapshot(depth, u, v);
+    // Lazy: only converted when the hand mask asks for it, then cached for this frame.
+    let map: DepthMap | null = null;
+    Object.defineProperty(cam, "depthMap", {
+      enumerable: true,
+      get: () => (map ??= buildDepthMap(depth, depthMaps)),
+    });
+  }
   return cam;
 }
 
@@ -313,6 +399,7 @@ export function createXRVisionSource(
 
   let available = false;
   let hasDepth = false;
+  const depthMaps = createDepthMapPool(3);
   let disposed = false;
   let broken = !isGL2; // permanent failure → grab() always returns null
   let lastGrab = -Infinity;
@@ -454,7 +541,7 @@ export function createXRVisionSource(
         const img = readCamera(camTex, size.width, size.height);
         available = true;
         // readDepth never throws: a depth failure only means "no depth", never "no image".
-        const cam = makeCameraModel(view.transform.matrix, view.projectionMatrix, readDepth(frame, view));
+        const cam = makeCameraModel(view.transform.matrix, view.projectionMatrix, readDepth(frame, view), depthMaps);
         return { image: img, cam };
       } catch (err) {
         warnOnce("camera grab failed", err);

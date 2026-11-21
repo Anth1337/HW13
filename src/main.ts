@@ -1,5 +1,6 @@
 import "./style.css";
 import * as THREE from "three";
+import { primeVoice, releasePrimedVoice } from "./dogPlay";
 import { isCameraModeSupported, startCameraMode } from "./cameraMode";
 import { mountCreator } from "./creator";
 import { dogConfigStore } from "./dog/config";
@@ -99,9 +100,11 @@ function launcher(view: View, button: HTMLButtonElement, start: (onEnd: () => vo
     };
     try {
       view.leavePreview();
+      primeVoice(); // inside the tap: the mic prompt needs the gesture, and AR may refuse it later
       await start(restore);
     } catch (err) {
       console.error(err);
+      releasePrimedVoice();
       ui.overlay.hidden = true;
       homeText.textContent = `${failure}: ${err instanceof Error ? err.message : err}`;
       restore();
