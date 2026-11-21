@@ -1,0 +1,148 @@
+:root {
+  --bg: #2b2b2b;
+  --fg: #f2f2f2;
+  --muted: #b5b5b5;
+  --accent: #ffa033; /* Blender selection orange */
+  --on-accent: #1a1a1a;
+  --glass: rgba(20, 20, 20, 0.62);
+  --font: -apple-system, system-ui, "Segoe UI", Roboto, sans-serif;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font);
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app canvas {
+  display: block;
+  touch-action: none;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* ---- Start screen ---- */
+.home {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 24px 16px calc(32px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  text-align: center;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
+  pointer-events: none; /* let drags reach the 3D preview */
+}
+
+.home > * {
+  pointer-events: auto;
+}
+
+.home h1 {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.home-text {
+  margin: 0;
+  max-width: 34ch;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+#quicklook img {
+  display: block;
+  width: 240px;
+  height: 56px;
+}
+
+/* ---- Buttons ---- */
+.btn {
+  appearance: none;
+  border: 0;
+  border-radius: 999px;
+  padding: 14px 22px;
+  min-width: 96px;
+  font: 600 16px var(--font);
+  color: var(--fg);
+  background: var(--glass);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  cursor: pointer;
+}
+
+.btn:active {
+  opacity: 0.7;
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn-primary {
+  min-width: 240px;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+/* ---- AR overlay (WebXR DOM overlay) ---- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  font-family: var(--font);
+}
+
+.hint-wrap {
+  position: absolute;
+  top: calc(20px + env(safe-area-inset-top));
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: center;
+}
+
+.hint {
+  padding: 8px 14px;
+  border-radius: 18px;
+  background: var(--glass);
+  color: var(--fg);
+  font-size: 15px;
+  text-align: center;
+}
+
+.toolbar {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: calc(28px + env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.toolbar .btn {
+  flex: 1;
+  max-width: 130px;
+  min-width: 0;
+}
