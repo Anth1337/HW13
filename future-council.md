@@ -24,7 +24,11 @@ Hack Western 13 · Canada Life Future Me Challenge · Team brief · Revised Nove
 
 ## What Canada Life's research actually says
 
+<<<<<<< HEAD
 The track links to Canada Life's page "How to help Gen Z employees save for an uncertain future." Its one claim: young employees are "struggling with existential dread, which leads to doomscrolling as a way to cope with their growing feelings of helplessness." The full report, *The disappearing horizon* (October 2026), was done with Deloitte's behavioural economics team: about 1,900 Canadians surveyed (around 40% Gen Z), focus groups, and a randomized experiment on which messages change saving.
+=======
+[Settlers of Solana](https://devpost.com/software/_solanasim) was a Hack the North 2026 finalist and won Best Use of Solana there.
+>>>>>>> b110696296fb354a0c985f7a5f5f41fdce65b19e
 
 | Finding | Number |
 |---|---|

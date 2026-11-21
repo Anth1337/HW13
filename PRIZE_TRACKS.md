@@ -13,8 +13,7 @@
 |-------|---------|-------------------------|
 | **First Place Overall** | 1 team | Apple 11-inch iPad |
 | **Second Place Overall** | 1 team | Apple AirPods Pro 3 |
-| **Third Place Overall** | 1 team | Fitbit Air |
-
+| **Third Place Overall** | 1 team | Fitbit Air 
 ---
 
 ## Organizer & sponsor tracks

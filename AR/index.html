@@ -4,29 +4,51 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#2b2b2b" />
-    <title>AR Cube</title>
+    <title>AR Dog</title>
   </head>
   <body>
+    <!-- Camera mode (no WebXR): the live camera, behind the transparent 3D canvas. -->
+    <video id="camera-video" class="camera-video" playsinline muted autoplay hidden></video>
+
     <div id="app"></div>
 
-    <!-- Start screen: 3D preview with the AR entry button -->
-    <div id="home" class="home">
-      <h1>AR Cube</h1>
-      <p id="home-text" class="home-text">Checking AR support…</p>
+    <!-- Start screen: 3D preview, character picker and the AR entry buttons.
+         Starts in the centered "checking" state until main.ts knows which AR path to use. -->
+    <div id="home" class="home checking">
+      <h1>AR Dog</h1>
+      <p id="home-text" class="home-text" role="status">Checking AR support…</p>
+      <div id="home-picker" class="picker" role="group" aria-label="Choose a character"></div>
       <button id="start-ar" class="btn btn-primary" hidden>Start AR</button>
       <!-- iOS AR Quick Look needs an <a rel="ar"> whose only child is an <img>. -->
-      <a id="quicklook" rel="ar" download="cube.usdz" hidden>
+      <a id="quicklook" rel="ar" download="character.usdz" hidden>
         <img id="quicklook-img" alt="View in AR" />
       </a>
+      <button id="start-camera" class="btn btn-primary" hidden>Play with the dog (camera)</button>
     </div>
 
-    <!-- Shown on top of the camera while a WebXR AR session runs (Android). -->
+    <!-- Shown on top of the camera while a WebXR AR session (Android) or camera mode runs.
+         In camera mode it gets the "camera-mode" class, which hides the picker, Undo and Clear. -->
     <div id="overlay" class="overlay" hidden>
-      <div class="hint-wrap"><span id="hint" class="hint">Scanning…</span></div>
-      <div class="toolbar">
-        <button id="btn-undo" class="btn" disabled>Undo</button>
-        <button id="btn-clear" class="btn" disabled>Clear</button>
-        <button id="btn-exit" class="btn">Exit</button>
+      <canvas id="vision-canvas" class="vision-canvas" hidden></canvas>
+      <div class="hint-wrap">
+        <span id="hint" class="hint">Scanning…</span>
+        <span id="status" class="status-chip" role="status" hidden></span>
+      </div>
+      <div id="ar-controls" class="ar-controls">
+        <div class="tricks" role="group" aria-label="Tricks">
+          <button id="btn-trick-rollOver" class="btn btn-trick" disabled>Roll over</button>
+          <button id="btn-trick-jump" class="btn btn-trick" disabled>Jump</button>
+          <button id="btn-trick-spin" class="btn btn-trick" disabled>Spin</button>
+        </div>
+        <div class="ar-row">
+          <div id="ar-picker" class="picker picker-compact" role="group" aria-label="Character to place"></div>
+          <button id="btn-vision" class="btn btn-icon" aria-pressed="false" aria-label="Show vision" title="Show what the dog sees">👁</button>
+        </div>
+        <div class="toolbar">
+          <button id="btn-undo" class="btn ar-only" disabled>Undo</button>
+          <button id="btn-clear" class="btn ar-only" disabled>Clear</button>
+          <button id="btn-exit" class="btn">Exit</button>
+        </div>
       </div>
     </div>
 
