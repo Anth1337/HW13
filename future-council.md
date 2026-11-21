@@ -157,22 +157,6 @@ Future Council puts several versions of you through the same luck, and they re-p
 
 ---
 
-## Solana: skip it
-
-- Settlers just won the Solana prize with an agent simulation, so ours would look derivative.
-- Crypto inside a Gen Z planning tool is a hard sell to an insurance company's judges.
-- It costs hours we don't have.
-
----
-
-## VaxBridge or Future Council?
-
-- **Future Council is the easier build:** all the data is made up, so there's no handwriting to read and no Ontario regulation to encode.
-- **VaxBridge has the bigger real-world story** and passed a more thorough originality check. It's in the Best Health Hack by Sun Life track. Team page: <https://claude.ai/artifact/FjfeSZLJxf3Nkz5gY1NsCL>
-- It's Saturday, so pick one within the hour.
-
----
-
 ## Sources
 
 **Inspiration**
