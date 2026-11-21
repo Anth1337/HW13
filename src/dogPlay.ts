@@ -79,6 +79,9 @@ const VOICE_PREF_KEY = "ar-dog-voice";
 const VOICE_HINT_KEY = "ar-dog-voice-hint-seen";
 const VOICE_HINT_TEXT = "Say: sit · lie down · come · roll over · jump · spin";
 const VOICE_HINT_S = 7;
+const IS_APPLE_TOUCH =
+  typeof navigator !== "undefined" &&
+  (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.userAgent.includes("Macintosh") && navigator.maxTouchPoints > 1));
 const VOICE_CHIP_S = 2;
 /** Same command inside one utterance (interim updates, then the final) fires once; also not again within this. */
 const VOICE_REPEAT_MS = 1500;
@@ -262,10 +265,10 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     }
   }
 
-  function showChip(text: string) {
+  function showChip(text: string, seconds = VOICE_CHIP_S) {
     ui.voiceChip.textContent = text;
     ui.voiceChip.hidden = text === "";
-    voiceChipLeft = text === "" ? 0 : VOICE_CHIP_S;
+    voiceChipLeft = text === "" ? 0 : seconds;
   }
 
   function syncVoiceUI() {
@@ -275,7 +278,9 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     ui.voiceToggle.dataset.state = voiceState === "off" && voiceWanted ? "armed" : voiceState;
     ui.voiceToggle.title =
       voiceState === "denied"
-        ? "Microphone blocked — allow it in the browser's site settings"
+        ? IS_APPLE_TOUCH
+          ? "Voice blocked — turn on Dictation in iOS Settings → General → Keyboard and allow the microphone"
+          : "Microphone blocked — allow it in the browser's site settings"
         : on
           ? "Listening for commands — tap to turn off"
           : voiceWanted
@@ -382,7 +387,14 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     if (s === "denied") {
       voiceWanted = false;
       storageSet(VOICE_PREF_KEY, "0");
-      showChip("Microphone blocked — allow it in site settings");
+      // iOS Safari reports both a refused mic and disabled Dictation/Siri ("service-not-allowed") as a
+      // first-time refusal, so the message names both fixes. Longer than a normal chip: it needs reading.
+      showChip(
+        IS_APPLE_TOUCH
+          ? "Voice needs Dictation: Settings → General → Keyboard → Enable Dictation (and allow the microphone for Safari)"
+          : "Microphone blocked — allow it in site settings",
+        7,
+      );
     } else if (s === "off" && voiceWanted && voice && !(typeof document !== "undefined" && document.hidden)) {
       // Recogniser gave up (e.g. repeated network errors): say so rather than silently doing nothing.
       showChip("Voice stopped — tap 🎤 to retry");

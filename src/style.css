@@ -170,8 +170,22 @@ body {
 
 #quicklook img {
   display: block;
-  width: 200px;
+  width: 220px;
   height: 52px;
+}
+
+/* Quick Look is the secondary, still-photo option on iOS: quieter than Deploy. */
+#quicklook {
+  opacity: 0.8;
+}
+
+.home-tip {
+  flex: 1 1 100%;
+  margin: 0;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--muted, #b5b5b5);
 }
 
 /* ---- Creator controls ---- */
