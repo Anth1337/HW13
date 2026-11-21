@@ -1,7 +1,7 @@
 import * as THREE from "three";
-import { dogConfigStore } from "./dog/config";
 import { createDogPlay } from "./dogPlay";
-import { createDogCharacter } from "./models/dog";
+import { createPetCharacter } from "./models/pet";
+import { petName, petStore } from "./pets";
 import { createShadowCatcher, shadowSizeFor } from "./shadow";
 import type { CameraModel } from "./vision/types";
 import type { ARUI } from "./webxr";
@@ -41,7 +41,8 @@ export function isCameraModeSupported(): boolean {
 
 /**
  * Starts camera mode. Call from a click handler (camera permission prompt). Throws if the camera
- * can't be opened. `onEnd` runs after Exit, once the camera is stopped and the render loop is free.
+ * can't be opened or no pet is active (petStore.active()). `onEnd` runs after Exit, once the camera
+ * is stopped and the render loop is free.
  */
 export async function startCameraMode(
   renderer: THREE.WebGLRenderer,
@@ -49,6 +50,8 @@ export async function startCameraMode(
   video: HTMLVideoElement,
   onEnd: () => void,
 ): Promise<void> {
+  const pet = petStore.active();
+  if (!pet) throw new Error("No animal selected to deploy.");
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
     video: { facingMode: "environment", width: { ideal: 1280 } },
@@ -86,7 +89,7 @@ export async function startCameraMode(
   const camera = new THREE.PerspectiveCamera(60, 1, 0.01, 50);
   camera.position.set(0, 0, 0);
 
-  const dog = createDogCharacter(dogConfigStore.get());
+  const dog = createPetCharacter(pet);
   const anchor = new THREE.Group();
   anchor.add(dog.root);
   scene.add(anchor);
@@ -174,7 +177,7 @@ export async function startCameraMode(
   sc.updateProjectionMatrix();
 
   // ---- Dog play ----
-  const play = createDogPlay(scene, ui, videoUVToScreen);
+  const play = createDogPlay(scene, ui, videoUVToScreen, pet.species);
   const brain = play.attach(dog, anchor, FLOOR_Y);
   brain.placeAt(new THREE.Vector3(0, FLOOR_Y, -DOG_DISTANCE), camera.position, FLOOR_Y);
   play.handOcclusion = true; // no depth API in camera mode
@@ -183,8 +186,7 @@ export async function startCameraMode(
 
   ui.overlay.classList.add("camera-mode");
   ui.overlay.hidden = false;
-  const name = dogConfigStore.get().name.trim() || "your dog";
-  ui.hint.textContent = `Tap the floor to send ${name} there`;
+  ui.hint.textContent = `Tap the floor to send ${petName(pet)} there`;
 
   // ---- Tap the virtual floor → go there ----
   const onDown = (e: PointerEvent) => {

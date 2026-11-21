@@ -1,36 +1,22 @@
-import { BREEDS, breedPreset, configForBreed, dogConfigStore, randomDogConfig } from "./dog/config";
-import type { CoatPattern, DogConfig, EarStyle, Sex, TailStyle } from "./dog/types";
+import { CAT_BREEDS, catBreedPreset, configForCatBreed, randomCatConfig } from "./cat/config";
+import type { CatConfig, CatEarStyle, CatTailStyle } from "./cat/types";
+import { BREEDS, breedPreset, configForBreed, randomDogConfig } from "./dog/config";
+import type { DogConfig, EarStyle, Sex, TailStyle } from "./dog/types";
+import { petStore, type Species } from "./pets";
 
 /*
- * The dog character creator: fills #creator with labelled controls bound to dogConfigStore.
- * Discrete choices (breed, sex, chips, toggles) commit at once; slider / colour drags and name
- * typing are debounced (~80 ms) so the preview isn't rebuilt on every input event.
+ * The character creator: fills #creator with labelled controls for the active pet (petStore),
+ * using the controls for its species. Discrete choices (breed, sex, chips, toggles) commit at
+ * once; slider / colour drags and name typing are debounced (~80 ms) so the preview isn't
+ * rebuilt on every input event. Mounted for one pet: main.ts destroys + remounts it when the
+ * active pet changes.
  */
 
 const DEBOUNCE_MS = 80;
 
-const PATTERNS: { value: CoatPattern; label: string }[] = [
-  { value: "solid", label: "Solid" },
-  { value: "twoTone", label: "Two-tone" },
-  { value: "saddle", label: "Saddle" },
-  { value: "spots", label: "Spots" },
-  { value: "mask", label: "Mask" },
-  { value: "patches", label: "Patches" },
-];
-const EARS: { value: EarStyle; label: string }[] = [
-  { value: "floppy", label: "Floppy" },
-  { value: "pointy", label: "Pointy" },
-  { value: "folded", label: "Folded" },
-  { value: "long", label: "Long" },
-];
-const TAILS: { value: TailStyle; label: string }[] = [
-  { value: "otter", label: "Otter" },
-  { value: "curled", label: "Curled" },
-  { value: "stub", label: "Stub" },
-  { value: "plume", label: "Plume" },
-  { value: "whip", label: "Whip" },
-];
-const SEXES: { value: Sex; label: string }[] = [
+type Option<T> = { value: T; label: string };
+
+const SEXES: Option<Sex>[] = [
   { value: "female", label: "♀ Female" },
   { value: "male", label: "♂ Male" },
 ];
@@ -38,7 +24,7 @@ const SEXES: { value: Sex; label: string }[] = [
 let uid = 0;
 const nextId = (base: string) => `cr-${base}-${++uid}`;
 
-function el<K extends keyof HTMLElementTagNameMap>(
+export function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   props: Partial<Record<string, string>> = {},
   children: (Node | string)[] = [],
@@ -57,25 +43,177 @@ function el<K extends keyof HTMLElementTagNameMap>(
 /** Three-word description of a 0..1 slider value. */
 const words = (lo: string, mid: string, hi: string) => (v: number) => (v < 0.34 ? lo : v > 0.66 ? hi : mid);
 
+/** The fields every species' config shares (DogConfig and CatConfig both fit). */
+interface BaseConfig {
+  name: string;
+  breed: string;
+  sex: Sex;
+  size: number;
+  build: number;
+  legLength: number;
+  coat: { primary: string; secondary: string; pattern: string; fluff: number };
+}
+
+/** The generic controls, bound to one config type. */
+interface Kit<C> {
+  section(title: string, ...children: Node[]): HTMLElement;
+  chips<T extends string>(label: string, options: Option<T>[], get: (c: C) => T, set: (c: C, v: T) => void, opts?: { segmented?: boolean }): HTMLElement;
+  slider(label: string, get: (c: C) => number, set: (c: C, v: number) => void, describe: (v: number, c: C) => string): HTMLElement;
+  color(label: string, get: (c: C) => string, set: (c: C, v: string) => void): HTMLElement;
+  toggle(label: string, get: (c: C) => boolean, set: (c: C, v: boolean) => void): HTMLElement;
+}
+
+/** What differs per species. Breed, body and coat are laid out the same; `extra` adds the rest. */
+interface SpeciesUI<C extends BaseConfig> {
+  species: Species;
+  breeds: Option<C["breed"]>[];
+  preset(breed: C["breed"]): { heightRange: [number, number]; coatSwatches: { primary: string; secondary: string; label: string }[] };
+  forBreed(breed: C["breed"], keep: { name: string; sex: Sex }): C;
+  random(): C;
+  build: [string, string, string];
+  patterns: Option<C["coat"]["pattern"]>[];
+  fluff: [string, string, string];
+  extra(kit: Kit<C>): void;
+}
+
+const DOG: SpeciesUI<DogConfig> = {
+  species: "dog",
+  breeds: BREEDS.map((b) => ({ value: b.breed, label: b.label })),
+  preset: breedPreset,
+  forBreed: configForBreed,
+  random: randomDogConfig,
+  build: ["Slim", "Average", "Stocky"],
+  patterns: [
+    { value: "solid", label: "Solid" },
+    { value: "twoTone", label: "Two-tone" },
+    { value: "saddle", label: "Saddle" },
+    { value: "spots", label: "Spots" },
+    { value: "mask", label: "Mask" },
+    { value: "patches", label: "Patches" },
+  ],
+  fluff: ["Sleek", "Medium", "Fluffy"],
+  extra({ section, chips, slider, color, toggle }) {
+    const ears: Option<EarStyle>[] = [
+      { value: "floppy", label: "Floppy" },
+      { value: "pointy", label: "Pointy" },
+      { value: "folded", label: "Folded" },
+      { value: "long", label: "Long" },
+    ];
+    const tails: Option<TailStyle>[] = [
+      { value: "otter", label: "Otter" },
+      { value: "curled", label: "Curled" },
+      { value: "stub", label: "Stub" },
+      { value: "plume", label: "Plume" },
+      { value: "whip", label: "Whip" },
+    ];
+    section(
+      "Face",
+      slider("Snout", (c) => c.face.snoutLength, (c, v) => (c.face.snoutLength = v), words("Flat", "Medium", "Long")),
+      chips("Ears", ears, (c) => c.face.earStyle, (c, v) => (c.face.earStyle = v)),
+      slider("Eye size", (c) => c.face.eyeSize, (c, v) => (c.face.eyeSize = v), words("Small", "Medium", "Big")),
+      el("div", { class: "cr-colors" }, [
+        color("Eyes", (c) => c.face.eyeColor, (c, v) => (c.face.eyeColor = v)),
+        color("Nose", (c) => c.face.noseColor, (c, v) => (c.face.noseColor = v)),
+      ]),
+      el("div", { class: "cr-toggles" }, [
+        toggle("Brows", (c) => c.face.brows, (c, v) => (c.face.brows = v)),
+        toggle("Tongue out", (c) => c.face.tongueOut, (c, v) => (c.face.tongueOut = v)),
+      ]),
+    );
+    section("Tail", chips("Tail style", tails, (c) => c.tail, (c, v) => (c.tail = v)));
+    section(
+      "Collar",
+      el("div", { class: "cr-colors" }, [
+        color("Collar", (c) => c.collar.color, (c, v) => (c.collar.color = v)),
+        toggle("Name tag", (c) => c.collar.tag, (c, v) => (c.collar.tag = v)),
+      ]),
+    );
+  },
+};
+
+const CAT: SpeciesUI<CatConfig> = {
+  species: "cat",
+  breeds: CAT_BREEDS.map((b) => ({ value: b.breed, label: b.label })),
+  preset: catBreedPreset,
+  forBreed: configForCatBreed,
+  random: randomCatConfig,
+  build: ["Slim", "Average", "Chonky"],
+  patterns: [
+    { value: "solid", label: "Solid" },
+    { value: "tabby", label: "Tabby" },
+    { value: "bicolor", label: "Bicolour" },
+    { value: "tuxedo", label: "Tuxedo" },
+    { value: "colorpoint", label: "Colourpoint" },
+    { value: "calico", label: "Calico" },
+    { value: "spotted", label: "Spotted" },
+  ],
+  fluff: ["Hairless", "Short", "Long-haired"],
+  extra({ section, chips, slider, color, toggle }) {
+    const ears: Option<CatEarStyle>[] = [
+      { value: "upright", label: "Upright" },
+      { value: "folded", label: "Folded" },
+      { value: "tufted", label: "Tufted" },
+      { value: "large", label: "Large" },
+    ];
+    const tails: Option<CatTailStyle>[] = [
+      { value: "long", label: "Long" },
+      { value: "plume", label: "Plume" },
+      { value: "bob", label: "Bob" },
+      { value: "ringed", label: "Ringed" },
+    ];
+    section(
+      "Face",
+      slider("Muzzle", (c) => c.face.muzzle, (c, v) => (c.face.muzzle = v), words("Flat", "Medium", "Wedge")),
+      chips("Ears", ears, (c) => c.face.earStyle, (c, v) => (c.face.earStyle = v)),
+      slider("Eye size", (c) => c.face.eyeSize, (c, v) => (c.face.eyeSize = v), words("Small", "Medium", "Big")),
+      el("div", { class: "cr-colors" }, [
+        color("Eyes", (c) => c.face.eyeColor, (c, v) => (c.face.eyeColor = v)),
+        color("Nose", (c) => c.face.noseColor, (c, v) => (c.face.noseColor = v)),
+      ]),
+      el("div", { class: "cr-toggles" }, [toggle("Whiskers", (c) => c.face.whiskers, (c, v) => (c.face.whiskers = v))]),
+    );
+    section("Tail", chips("Tail style", tails, (c) => c.tail, (c, v) => (c.tail = v)));
+    section(
+      "Collar",
+      el("div", { class: "cr-toggles" }, [toggle("Collar", (c) => c.collar.enabled, (c, v) => (c.collar.enabled = v))]),
+      el("div", { class: "cr-colors" }, [
+        color("Colour", (c) => c.collar.color, (c, v) => (c.collar.color = v)),
+        toggle("Bell", (c) => c.collar.bell, (c, v) => (c.collar.bell = v)),
+      ]),
+    );
+  },
+};
+
+/** Mount the creator for the active pet (empty if there is none). */
 export function mountCreator(container: HTMLElement): { destroy(): void } {
+  const pet = petStore.active();
+  if (!pet) {
+    container.replaceChildren();
+    return { destroy() {} };
+  }
+  return pet.species === "cat" ? build(container, pet.config, CAT) : build(container, pet.config, DOG);
+}
+
+function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: SpeciesUI<C>): { destroy(): void } {
   /** The latest config, including edits not yet committed to the store. */
-  let draft: DogConfig = dogConfigStore.get();
+  let draft: C = initial;
   let timer: number | undefined;
-  const syncers: ((c: DogConfig) => void)[] = [];
+  const syncers: ((c: C) => void)[] = [];
+  const cleanups: (() => void)[] = [];
 
   const commitNow = () => {
     if (timer !== undefined) {
       clearTimeout(timer);
       timer = undefined;
     }
-    dogConfigStore.set(draft);
+    petStore.updateActive(draft as unknown as DogConfig | CatConfig);
   };
   const commitSoon = () => {
     if (timer !== undefined) clearTimeout(timer);
     timer = window.setTimeout(commitNow, DEBOUNCE_MS);
   };
   /** Apply an edit to a copy of the draft (configs from the store are never mutated). */
-  const edit = (fn: (c: DogConfig) => void, debounce: boolean) => {
+  const edit = (fn: (c: C) => void, debounce: boolean) => {
     const next = structuredClone(draft);
     fn(next);
     draft = next;
@@ -106,12 +244,12 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
   });
 
   const diceIcon = el("span", { class: "dice-icon", "aria-hidden": "true", text: "🎲" });
-  const dice = el("button", { type: "button", class: "cr-dice", title: "Random dog" }, [diceIcon, el("span", { text: "Randomize" })]);
+  const dice = el("button", { type: "button", class: "cr-dice", title: `Random ${ui.species}` }, [diceIcon, el("span", { text: "Randomize" })]);
   dice.addEventListener("click", () => {
     diceIcon.classList.remove("rolling");
     void diceIcon.offsetWidth; // restart the animation on quick repeated taps
     diceIcon.classList.add("rolling");
-    draft = randomDogConfig();
+    draft = ui.random();
     commitNow();
   });
   diceIcon.addEventListener("animationend", () => diceIcon.classList.remove("rolling"));
@@ -135,9 +273,9 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
   /** A row of toggle buttons (one pressed). */
   function chips<T extends string>(
     label: string,
-    options: { value: T; label: string }[],
-    get: (c: DogConfig) => T,
-    set: (c: DogConfig, v: T) => void,
+    options: Option<T>[],
+    get: (c: C) => T,
+    set: (c: C, v: T) => void,
     opts: { scroll?: boolean; segmented?: boolean; onPick?: (v: T) => void } = {},
   ) {
     const id = nextId("chips");
@@ -166,11 +304,13 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
     if (opts.scroll) {
       // The row may first be laid out after mount (the creator is hidden during the checking state).
       let wasVisible = false;
-      new ResizeObserver(() => {
+      const ro = new ResizeObserver(() => {
         const visible = group.clientWidth > 0;
         if (visible && !wasVisible) revealPressed();
         wasVisible = visible;
-      }).observe(group);
+      });
+      ro.observe(group);
+      cleanups.push(() => ro.disconnect());
     }
     syncers.push((c) => {
       const v = get(c);
@@ -181,7 +321,7 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
   }
 
   /** A 0..1 slider with a word/number readout. */
-  function slider(label: string, get: (c: DogConfig) => number, set: (c: DogConfig, v: number) => void, describe: (v: number, c: DogConfig) => string) {
+  function slider(label: string, get: (c: C) => number, set: (c: C, v: number) => void, describe: (v: number, c: C) => string) {
     const id = nextId("rng");
     const input = el("input", { id, type: "range", min: "0", max: "1", step: "0.01", class: "cr-range" });
     const out = el("output", { for: id, class: "cr-out" });
@@ -202,7 +342,7 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
     ]);
   }
 
-  function color(label: string, get: (c: DogConfig) => string, set: (c: DogConfig, v: string) => void) {
+  function color(label: string, get: (c: C) => string, set: (c: C, v: string) => void) {
     const id = nextId("col");
     const input = el("input", { id, type: "color", class: "cr-color" });
     input.addEventListener("input", () => edit((c) => set(c, input.value), true));
@@ -214,7 +354,7 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
     return el("label", { for: id, class: "cr-colorfield" }, [input, el("span", { text: label })]);
   }
 
-  function toggle(label: string, get: (c: DogConfig) => boolean, set: (c: DogConfig, v: boolean) => void) {
+  function toggle(label: string, get: (c: C) => boolean, set: (c: C, v: boolean) => void) {
     const b = el("button", { type: "button", role: "switch", class: "cr-switch", "aria-checked": "false" }, [
       el("span", { class: "cr-switch-track", "aria-hidden": "true" }, [el("span", { class: "cr-switch-knob" })]),
       el("span", { text: label }),
@@ -227,19 +367,19 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
   /* ---- Breed ---- */
   const resetBreed = el("button", { type: "button", class: "cr-link", text: "Reset breed" });
   resetBreed.addEventListener("click", () => {
-    draft = configForBreed(draft.breed, { name: draft.name, sex: draft.sex });
+    draft = ui.forBreed(draft.breed, { name: draft.name, sex: draft.sex });
     commitNow();
   });
   const breedField = chips(
     "Breed",
-    BREEDS.map((b) => ({ value: b.breed, label: b.label })),
+    ui.breeds,
     (c) => c.breed,
     () => {},
     {
       scroll: true,
       onPick: (breed) => {
         if (breed === draft.breed) return;
-        draft = configForBreed(breed, { name: draft.name, sex: draft.sex });
+        draft = ui.forBreed(breed, { name: draft.name, sex: draft.sex });
         commitNow();
       },
     },
@@ -250,15 +390,15 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
   root.append(breedSection);
 
   /* ---- Body ---- */
-  const heightCm = (v: number, c: DogConfig) => {
-    const [lo, hi] = breedPreset(c.breed).heightRange;
+  const heightCm = (v: number, c: C) => {
+    const [lo, hi] = ui.preset(c.breed).heightRange;
     return `${Math.round((lo + (hi - lo) * v) * 100)} cm`;
   };
   section(
     "Body",
     chips("Sex", SEXES, (c) => c.sex, (c, v) => (c.sex = v), { segmented: true }),
     slider("Size", (c) => c.size, (c, v) => (c.size = v), heightCm),
-    slider("Build", (c) => c.build, (c, v) => (c.build = v), words("Slim", "Average", "Stocky")),
+    slider("Build", (c) => c.build, (c, v) => (c.build = v), words(...ui.build)),
     slider("Leg length", (c) => c.legLength, (c, v) => (c.legLength = v), words("Short", "Average", "Long")),
   );
 
@@ -272,7 +412,7 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
       swatchBreed = c.breed;
       swatchRow.replaceChildren();
       swatchButtons.length = 0;
-      for (const s of breedPreset(c.breed).coatSwatches) {
+      for (const s of ui.preset(c.breed).coatSwatches) {
         const b = el("button", { type: "button", class: "cr-swatch", title: s.label, "aria-label": s.label, "aria-pressed": "false" }, [
           el("span", { class: "cr-swatch-a", style: `background:${s.primary}` }),
           el("span", { class: "cr-swatch-b", style: `background:${s.secondary}` }),
@@ -299,53 +439,32 @@ export function mountCreator(container: HTMLElement): { destroy(): void } {
       color("Main", (c) => c.coat.primary, (c, v) => (c.coat.primary = v)),
       color("Markings", (c) => c.coat.secondary, (c, v) => (c.coat.secondary = v)),
     ]),
-    chips("Pattern", PATTERNS, (c) => c.coat.pattern, (c, v) => (c.coat.pattern = v)),
-    slider("Fluff", (c) => c.coat.fluff, (c, v) => (c.coat.fluff = v), words("Sleek", "Medium", "Fluffy")),
+    chips("Pattern", ui.patterns, (c) => c.coat.pattern, (c, v) => (c.coat.pattern = v)),
+    slider("Fluff", (c) => c.coat.fluff, (c, v) => (c.coat.fluff = v), words(...ui.fluff)),
   );
 
-  /* ---- Face ---- */
-  section(
-    "Face",
-    slider("Snout", (c) => c.face.snoutLength, (c, v) => (c.face.snoutLength = v), words("Flat", "Medium", "Long")),
-    chips("Ears", EARS, (c) => c.face.earStyle, (c, v) => (c.face.earStyle = v)),
-    slider("Eye size", (c) => c.face.eyeSize, (c, v) => (c.face.eyeSize = v), words("Small", "Medium", "Big")),
-    el("div", { class: "cr-colors" }, [
-      color("Eyes", (c) => c.face.eyeColor, (c, v) => (c.face.eyeColor = v)),
-      color("Nose", (c) => c.face.noseColor, (c, v) => (c.face.noseColor = v)),
-    ]),
-    el("div", { class: "cr-toggles" }, [
-      toggle("Brows", (c) => c.face.brows, (c, v) => (c.face.brows = v)),
-      toggle("Tongue out", (c) => c.face.tongueOut, (c, v) => (c.face.tongueOut = v)),
-    ]),
-  );
-
-  /* ---- Tail + collar ---- */
-  section("Tail", chips("Tail style", TAILS, (c) => c.tail, (c, v) => (c.tail = v)));
-  section(
-    "Collar",
-    el("div", { class: "cr-colors" }, [
-      color("Collar", (c) => c.collar.color, (c, v) => (c.collar.color = v)),
-      toggle("Name tag", (c) => c.collar.tag, (c, v) => (c.collar.tag = v)),
-    ]),
-  );
+  /* ---- Face, tail, collar: per species ---- */
+  ui.extra({ section, chips, slider, color, toggle });
 
   container.replaceChildren(root);
 
-  const syncAll = (c: DogConfig) => {
+  const syncAll = (c: C) => {
     for (const s of syncers) s(c);
   };
   syncAll(draft);
-  const unsubscribe = dogConfigStore.subscribe((c) => {
+  const unsubscribe = petStore.subscribe(() => {
     // Changes from elsewhere (or our own commit echoing back). A pending debounced edit is newer.
-    if (timer !== undefined) return;
-    draft = c;
-    syncAll(c);
+    const p = petStore.active();
+    if (timer !== undefined || !p || p.species !== ui.species) return;
+    draft = p.config as unknown as C;
+    syncAll(draft);
   });
 
   return {
     destroy() {
       if (timer !== undefined) commitNow();
       unsubscribe();
+      for (const fn of cleanups) fn();
       container.replaceChildren();
     },
   };

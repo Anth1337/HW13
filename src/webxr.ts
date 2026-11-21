@@ -1,8 +1,8 @@
 import * as THREE from "three";
-import { dogConfigStore } from "./dog/config";
-import type { DogCharacter } from "./dog/types";
+import type { PetCharacter } from "./dog/types";
 import { createDogPlay, type PlayUI } from "./dogPlay";
-import { createDogCharacter } from "./models/dog";
+import { createPetCharacter } from "./models/pet";
+import { petName, petStore, type Pet } from "./pets";
 import { createShadowCatcher, shadowSizeFor } from "./shadow";
 import { DEPTH_SENSING_INIT, createXRVisionSource, gpuDepthOcclusionActive } from "./vision/xrCamera";
 import type { XRVisionSource } from "./vision/types";
@@ -42,9 +42,9 @@ export function arUIFromDOM(): ARUI {
     cmdLie: get<HTMLButtonElement>("cmd-lie"),
     cmdCome: get<HTMLButtonElement>("cmd-come"),
     cmdMode: get<HTMLButtonElement>("cmd-mode"),
-    trickRollOver: get<HTMLButtonElement>("trick-rollOver"),
-    trickJump: get<HTMLButtonElement>("trick-jump"),
-    trickSpin: get<HTMLButtonElement>("trick-spin"),
+    trick1: get<HTMLButtonElement>("trick-rollOver"),
+    trick2: get<HTMLButtonElement>("trick-jump"),
+    trick3: get<HTMLButtonElement>("trick-spin"),
     visionToggle: get<HTMLButtonElement>("btn-vision"),
     exit: get<HTMLButtonElement>("btn-exit"),
   };
@@ -54,7 +54,7 @@ const NO_CAMERA_ACCESS =
   "This browser doesn't share the camera image — petting with your hand won't work, but commands and tricks do";
 /** Seconds to wait for the first camera image before saying the browser doesn't share it. */
 const CAMERA_ACCESS_GRACE = 3;
-/** Hold the screen this long to re-place the dog at the reticle. */
+/** Hold the screen this long to re-place the pet at the reticle. */
 const LONG_PRESS_S = 0.6;
 /** Taps within this height of the dog's floor send it there. */
 const SAME_FLOOR = 0.15;
@@ -115,7 +115,7 @@ export async function isWebXRARSupported(): Promise<boolean> {
 }
 
 /**
- * Starts a WebXR AR session with the dog from the creator (dogConfigStore).
+ * Starts a WebXR AR session with the active pet (petStore.active(); throws if there is none).
  *
  * Flow: scanning → reticle on a surface → first tap places the dog there facing you. Then a tap
  * on the floor sends the dog to that spot, a long press (≥ 0.6 s) re-places it at the reticle,
@@ -126,6 +126,9 @@ export async function isWebXRARSupported(): Promise<boolean> {
  * the system back gesture). Throws (after cleaning up) if the session can't start.
  */
 export async function startARSession(renderer: THREE.WebGLRenderer, ui: ARUI, onEnd: () => void): Promise<void> {
+  const active = petStore.active();
+  if (!active) throw new Error("No animal selected to deploy.");
+  const pet: Pet = active; // (a non-null const: callbacks below keep the narrowing)
   const session = await requestARSession(ui.overlay);
 
   // ---- Scene ----
@@ -170,8 +173,8 @@ export async function startARSession(renderer: THREE.WebGLRenderer, ui: ARUI, on
   scene.add(catcher);
 
   // ---- State (all declared before anything below can call into it) ----
-  const play = createDogPlay(scene, ui, (u, v, w, h) => ({ x: u * w, y: v * h }));
-  let dog: DogCharacter | null = null;
+  const play = createDogPlay(scene, ui, (u, v, w, h) => ({ x: u * w, y: v * h }), pet.species);
+  let dog: PetCharacter | null = null;
   let anchor: THREE.Group | null = null;
   let floorY = 0;
   let hitTestSource: XRHitTestSource | null = null;
@@ -193,7 +196,7 @@ export async function startARSession(renderer: THREE.WebGLRenderer, ui: ARUI, on
   const rayD = new THREE.Vector3();
   const tmpQ = new THREE.Quaternion();
 
-  const dogName = () => dogConfigStore.get().name.trim() || "your dog";
+  const dogName = () => petName(pet);
   const setHint = (text: string) => {
     if (text !== lastHint) ui.hint.textContent = lastHint = text;
   };
@@ -225,7 +228,7 @@ export async function startARSession(renderer: THREE.WebGLRenderer, ui: ARUI, on
   function placeAt(point: THREE.Vector3) {
     floorY = point.y;
     if (!dog || !anchor) {
-      dog = createDogCharacter(dogConfigStore.get());
+      dog = createPetCharacter(pet);
       anchor = new THREE.Group();
       anchor.add(dog.root);
       scene.add(anchor);

@@ -84,10 +84,6 @@ export interface BreedPreset {
  *   export function randomDogConfig(): DogConfig             // the dice: random breed + plausible
  *                                                            // variations + random name; uses Math.random
  *   export function sanitizeDogConfig(raw: unknown): DogConfig   // validate / clamp / fill defaults
- *   export const dogConfigStore: {
- *     get(): DogConfig; set(c: DogConfig): void;              // set() saves to localStorage (try/catch)
- *     subscribe(fn: (c: DogConfig) => void): () => void;
- *   }
  *   export const DOG_NAMES: string[]
  */
 
@@ -95,19 +91,29 @@ export interface BreedPreset {
  * Dog model ↔ brain
  * ====================================================================================== */
 
-export type TrickKind = "rollOver" | "jump" | "spin";
+export type DogTrick = "rollOver" | "jump" | "spin";
+/** Cat tricks (src/models/cat.ts animates them): pounce on the spot, big front stretch, lick a paw. */
+export type CatTrick = "pounce" | "stretch" | "groom";
+/** Every species' tricks. The shared brain only times them; each model animates its own. */
+export type TrickKind = DogTrick | CatTrick;
 
 /** Seconds each trick lasts, start to finish (including getting back up). */
 export const TRICK_DURATION: Record<TrickKind, number> = {
   rollOver: 2.8,
   jump: 1.3,
   spin: 1.6,
+  pounce: 1.5,
+  stretch: 2.4,
+  groom: 3.0,
 };
 
 export const TRICK_LABEL: Record<TrickKind, string> = {
   rollOver: "Roll over",
   jump: "Jump",
   spin: "Spin",
+  pounce: "Pounce",
+  stretch: "Stretch",
+  groom: "Groom",
 };
 
 /**
@@ -159,9 +165,23 @@ export interface DogZones {
  * disposed (dispose()) when replaced. Origin on the ground under the body centre, faces +Z,
  * real-world scale from the breed height range and `size`.
  */
-export interface DogCharacter extends Character {
+export interface DogCharacter extends PetCharacter {
+  readonly species: "dog";
   readonly config: DogConfig;
-  readonly controls: DogControls;
+}
+
+/** Shared controls contract for every species (the cat reads the same fields). */
+export type PetControls = DogControls;
+export type PetZones = DogZones;
+
+/**
+ * What the shared brain (src/dog/brain.ts), play loop, preview and AR modes need from ANY
+ * animal model. DogCharacter and CatCharacter (src/cat/types.ts) both extend it.
+ */
+export interface PetCharacter extends Character {
+  readonly species: "dog" | "cat";
+  readonly config: { name: string };
+  readonly controls: PetControls;
   /** Height at the head top when standing (meters), for camera framing. */
   readonly height: number;
   /** Nose-to-rump length (meters), for spacing / follow distances. */

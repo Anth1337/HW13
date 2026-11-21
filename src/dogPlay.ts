@@ -1,15 +1,16 @@
 import * as THREE from "three";
-import { createDogBrain } from "./dog/brain";
+import { createPetBrain } from "./dog/brain";
 import { createPetFx } from "./dog/fx";
-import { TRICK_LABEL, type DogBrain, type DogCharacter, type DogCommand, type DogMode, type TrickKind } from "./dog/types";
+import { TRICK_LABEL, type DogBrain, type DogCommand, type DogMode, type PetCharacter, type TrickKind } from "./dog/types";
+import type { Species } from "./pets";
 import { createVisionDetector } from "./vision/detector";
 import { HAND_BONES, createHandOccluder } from "./vision/handOccluder";
 import { liftObservation } from "./vision/lift";
 import type { CameraModel, Observation, Perception, VisionDetector } from "./vision/types";
 
 /*
- * Everything the two "play with the dog" modes share (WebXR AR in webxr.ts and the camera
- * fallback in cameraMode.ts): the cached hand/face detector, the single dog's brain, the hand
+ * Everything the two "play with the pet" modes share (WebXR AR in webxr.ts and the camera
+ * fallback in cameraMode.ts): the cached hand/face detector, the single pet's brain, the hand
  * occluder, petting hearts + haptics, the command / trick / vision buttons, the status chip and
  * the "Show vision" debug drawing.
  *
@@ -26,9 +27,10 @@ export type PlayUI = {
   cmdLie: HTMLButtonElement;
   cmdCome: HTMLButtonElement;
   cmdMode: HTMLButtonElement;
-  trickRollOver: HTMLButtonElement;
-  trickJump: HTMLButtonElement;
-  trickSpin: HTMLButtonElement;
+  /** #trick-rollOver, #trick-jump, #trick-spin: the species' three tricks (PLAY_LABELS). */
+  trick1: HTMLButtonElement;
+  trick2: HTMLButtonElement;
+  trick3: HTMLButtonElement;
   visionToggle: HTMLButtonElement;
 };
 
@@ -39,7 +41,17 @@ export type Viewer = { position: THREE.Vector3; forward: THREE.Vector3 };
 
 export type DetectorState = "idle" | "loading" | "ready" | "failed";
 
-export const TRICKS: TrickKind[] = ["rollOver", "jump", "spin"];
+type PlayLabels = { sit: string; lie: string; come: string; tricks: [TrickKind, TrickKind, TrickKind] };
+
+/** Command button labels and the three trick buttons' tricks, per species. */
+export const PLAY_LABELS: Record<Species, PlayLabels> = {
+  dog: { sit: "Sit", lie: "Lie down", come: "Come", tricks: ["rollOver", "jump", "spin"] },
+  cat: { sit: "Sit", lie: "Loaf", come: "Here, kitty", tricks: ["pounce", "stretch", "groom"] },
+};
+
+/** Purr-like buzzes for cat petting (head = short, body = longer); dogs get a single bump. */
+const PURR_HEAD = [8, 24, 8, 24, 8, 24, 8];
+const PURR_BODY = [8, 24, 8, 24, 8, 24, 8, 24, 8, 24, 8];
 
 export const MODE_LABEL: Record<DogMode, string> = { follow: "Follow", free: "Free roam", stay: "Stay" };
 
@@ -65,10 +77,10 @@ const DRAW_AGE = 0.5; // s: keep drawing landmarks this long after the last dete
 const NOTE_SOLO_S = 8;
 
 export interface DogPlay {
-  /** Give the placed dog a brain (anchor = the Group holding dog.root, owned by the brain from now on). */
-  attach(dog: DogCharacter, anchor: THREE.Object3D, floorY: number): DogBrain;
+  /** Give the placed pet a brain (anchor = the Group holding pet.root, owned by the brain from now on). */
+  attach(pet: PetCharacter, anchor: THREE.Object3D, floorY: number): DogBrain;
   readonly brain: DogBrain | null;
-  readonly dog: DogCharacter | null;
+  readonly dog: PetCharacter | null;
   readonly detectorState: DetectorState;
   /** Starts loading the detector (once per page; later sessions reuse it). */
   ensureDetector(): void;
@@ -86,13 +98,15 @@ export interface DogPlay {
   dispose(): void;
 }
 
-export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToScreen): DogPlay {
+/** `species` labels the buttons for this session's animal; dispose() puts the dog labels back. */
+export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToScreen, species: Species): DogPlay {
+  const labels = PLAY_LABELS[species];
   // ---- All state first (setup calls below use it; avoids temporal-dead-zone crashes) ----
   const fx = createPetFx(scene);
   const occluder = createHandOccluder(scene);
   const ctx = ui.visionCanvas.getContext("2d");
   const cleanups: (() => void)[] = [];
-  let dog: DogCharacter | null = null;
+  let dog: PetCharacter | null = null;
   let brain: DogBrain | null = null;
   let unsubPet: (() => void) | null = null;
   let dogClock = 0;
@@ -118,12 +132,21 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     { button: ui.cmdLie, cmd: () => (brain?.posture === "lie" ? "stand" : "lie") },
     { button: ui.cmdCome, cmd: () => "come" },
     { button: ui.cmdMode, cmd: () => (brain?.mode === "follow" ? "free" : "follow") },
-    { button: ui.trickRollOver, cmd: () => "rollOver" },
-    { button: ui.trickJump, cmd: () => "jump" },
-    { button: ui.trickSpin, cmd: () => "spin" },
+    { button: ui.trick1, cmd: () => labels.tricks[0] },
+    { button: ui.trick2, cmd: () => labels.tricks[1] },
+    { button: ui.trick3, cmd: () => labels.tricks[2] },
   ];
 
   // ---- Helpers (function declarations: hoisted) ----
+  function setLabels(l: PlayLabels) {
+    ui.cmdSit.textContent = l.sit;
+    ui.cmdLie.textContent = l.lie;
+    ui.cmdCome.textContent = l.come;
+    ui.trick1.textContent = TRICK_LABEL[l.tricks[0]];
+    ui.trick2.textContent = TRICK_LABEL[l.tricks[1]];
+    ui.trick3.textContent = TRICK_LABEL[l.tricks[2]];
+  }
+
   function setStatus(text: string) {
     if (text === lastStatus) return;
     lastStatus = text;
@@ -256,9 +279,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     entry.button.addEventListener("click", onClick);
     cleanups.push(() => entry.button.removeEventListener("click", onClick));
   }
-  ui.trickRollOver.textContent = TRICK_LABEL.rollOver;
-  ui.trickJump.textContent = TRICK_LABEL.jump;
-  ui.trickSpin.textContent = TRICK_LABEL.spin;
+  setLabels(labels);
 
   const onToggle = () => setVision(!showVision);
   ui.visionToggle.addEventListener("click", onToggle);
@@ -272,10 +293,11 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       unsubPet?.();
       dog = newDog;
       dogClock = 0;
-      brain = createDogBrain(newDog, anchor, floorY);
+      brain = createPetBrain(newDog, anchor, floorY);
+      const cat = newDog.species === "cat";
       unsubPet = brain.onPetStart((zone, point) => {
         fx.burst(point, zone);
-        navigator.vibrate?.(zone === "head" ? 30 : [20, 40, 20]);
+        navigator.vibrate?.(cat ? (zone === "head" ? PURR_HEAD : PURR_BODY) : zone === "head" ? 30 : [20, 40, 20]);
       });
       syncButtons();
       return brain;
@@ -308,7 +330,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
           detectorState = "ready";
         },
         (err) => {
-          console.warn("[dog] hand detection unavailable", err);
+          console.warn("[pet] hand detection unavailable", err);
           if (!disposed) detectorState = "failed";
         },
       );
@@ -327,7 +349,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
         observationAge = 0;
         perception = liftObservation(observation, cam, perception, dtSincePrev);
       } catch (err) {
-        console.warn("[dog] detection failed", err);
+        console.warn("[pet] detection failed", err);
         return;
       }
       if (observation.hands.length > 0) lastHandSeenMs = timeMs;
@@ -370,6 +392,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       setVision(false);
       setStatus("");
       for (const { button } of commandButtons) button.disabled = false;
+      setLabels(PLAY_LABELS.dog); // index.html's labels: nothing species-specific left for the next session
       fx.dispose();
       occluder.dispose();
       brain = null;

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#2b2b2b" />
-    <title>AR Dog</title>
+    <title>AR Pets</title>
   </head>
   <body>
     <!-- Camera mode (no WebXR): the live camera, behind the transparent 3D canvas. -->
@@ -12,15 +12,18 @@
 
     <div id="app"></div>
 
-    <!-- Start screen: the dog character creator (bottom sheet on phones, side panel on wide
-         screens) over the 3D preview, and the deploy buttons. Starts in the centered
-         "checking" state until main.ts knows which AR path to use. -->
+    <!-- Start screen (bottom sheet on phones, side panel on wide screens) over the 3D preview:
+         the "My pets" slot menu (src/menu.ts) or the character creator for the active pet
+         (src/creator.ts), and the deploy buttons. Starts in the centered "checking" state
+         until main.ts knows which AR path to use. -->
     <div id="home" class="home checking">
       <header class="home-head">
-        <h1>AR Dog</h1>
+        <h1>AR Pets</h1>
         <p id="home-text" class="home-text" role="status">Checking AR support…</p>
       </header>
-      <div id="creator" class="creator" aria-label="Customise your dog"></div>
+      <section id="menu" class="menu" aria-label="My pets"></section>
+      <button id="btn-back" type="button" class="cr-back" hidden>← My pets</button>
+      <div id="creator" class="creator" aria-label="Customise your pet" hidden></div>
       <div id="home-actions" class="home-actions">
         <button id="btn-deploy" type="button" class="btn btn-primary" hidden>Deploy</button>
         <button id="btn-camera" type="button" class="btn" hidden>Camera mode</button>
@@ -48,7 +51,7 @@
           <button id="trick-rollOver" type="button" class="btn btn-trick">Roll over</button>
           <button id="trick-jump" type="button" class="btn btn-trick">Jump</button>
           <button id="trick-spin" type="button" class="btn btn-trick">Spin</button>
-          <button id="btn-vision" type="button" class="btn btn-small" aria-pressed="false" aria-label="Show vision" title="Show what the dog sees">👁</button>
+          <button id="btn-vision" type="button" class="btn btn-small" aria-pressed="false" aria-label="Show vision" title="Show what your pet sees">👁</button>
           <button id="btn-exit" type="button" class="btn btn-small btn-exit" aria-label="Exit" title="Exit">✕</button>
         </div>
       </div>
