@@ -1,0 +1,30 @@
+# Env files (keep the example)
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+
+# Builds
+dist/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# Deploy tools
+.vercel/
+.netlify/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
