@@ -1,8 +1,8 @@
 import * as THREE from "three";
-import { createDogBrain } from "./dog/brain";
+import { createPetBrain } from "./dog/brain";
 import { createPetFx } from "./dog/fx";
-import { TRICK_LABEL, type DogBrain, type DogCharacter, type DogCommand, type DogMode, type TrickKind } from "./dog/types";
-import { dogConfigStore } from "./dog/config";
+import { TRICK_LABEL, type DogBrain, type DogCommand, type DogMode, type PetCharacter, type TrickKind } from "./dog/types";
+import { petStore, type Species } from "./pets";
 import { createVisionDetector } from "./vision/detector";
 import { createPeopleTracker } from "./vision/people";
 import { createVoiceListener, parseVoiceCommand, type VoiceListener, type VoiceResult, type VoiceState } from "./voice";
@@ -12,8 +12,8 @@ import type { CameraModel, Observation, Perception, PerceivedPerson, VisionDetec
 import { createPartyLink } from "./net/party";
 
 /*
- * Everything the two "play with the dog" modes share (WebXR AR in webxr.ts and the camera
- * fallback in cameraMode.ts): the cached hand/face detector, the single dog's brain, the hand
+ * Everything the two "play with the pet" modes share (WebXR AR in webxr.ts and the camera
+ * fallback in cameraMode.ts): the cached hand/face detector, the single pet's brain, the hand
  * occluder, petting hearts + haptics, the command / trick / vision buttons, the status chip,
  * the "Show vision" debug drawing and, when the page is in a room, friends' pets (net/party.ts).
  *
@@ -30,9 +30,10 @@ export type PlayUI = {
   cmdLie: HTMLButtonElement;
   cmdCome: HTMLButtonElement;
   cmdMode: HTMLButtonElement;
-  trickRollOver: HTMLButtonElement;
-  trickJump: HTMLButtonElement;
-  trickSpin: HTMLButtonElement;
+  /** #trick-rollOver, #trick-jump, #trick-spin: the species' three tricks (PLAY_LABELS). */
+  trick1: HTMLButtonElement;
+  trick2: HTMLButtonElement;
+  trick3: HTMLButtonElement;
   visionToggle: HTMLButtonElement;
   /** 🎤 button (#btn-voice): hidden when the browser has no speech recognition. */
   voiceToggle: HTMLButtonElement;
@@ -49,7 +50,17 @@ export type Viewer = { position: THREE.Vector3; forward: THREE.Vector3 };
 
 export type DetectorState = "idle" | "loading" | "ready" | "failed";
 
-export const TRICKS: TrickKind[] = ["rollOver", "jump", "spin"];
+type PlayLabels = { sit: string; lie: string; come: string; tricks: [TrickKind, TrickKind, TrickKind] };
+
+/** Command button labels and the three trick buttons' tricks, per species. */
+export const PLAY_LABELS: Record<Species, PlayLabels> = {
+  dog: { sit: "Sit", lie: "Lie down", come: "Come", tricks: ["rollOver", "jump", "spin"] },
+  cat: { sit: "Sit", lie: "Loaf", come: "Here, kitty", tricks: ["pounce", "stretch", "groom"] },
+};
+
+/** Purr-like buzzes for cat petting (head = short, body = longer); dogs get a single bump. */
+const PURR_HEAD = [8, 24, 8, 24, 8, 24, 8];
+const PURR_BODY = [8, 24, 8, 24, 8, 24, 8, 24, 8, 24, 8];
 
 export const MODE_LABEL: Record<DogMode, string> = { follow: "Follow", free: "Free roam", stay: "Stay" };
 
@@ -80,6 +91,9 @@ const VOICE_PREF_KEY = "ar-dog-voice";
 const VOICE_HINT_KEY = "ar-dog-voice-hint-seen";
 const VOICE_HINT_TEXT = "Say: sit · lie down · come · roll over · jump · spin";
 const VOICE_HINT_S = 7;
+const IS_APPLE_TOUCH =
+  typeof navigator !== "undefined" &&
+  (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.userAgent.includes("Macintosh") && navigator.maxTouchPoints > 1));
 const VOICE_CHIP_S = 2;
 /** Same command inside one utterance (interim updates, then the final) fires once; also not again within this. */
 const VOICE_REPEAT_MS = 1500;
@@ -148,10 +162,10 @@ const POSE_BONES: [number, number][] = [
 ];
 
 export interface DogPlay {
-  /** Give the placed dog a brain (anchor = the Group holding dog.root, owned by the brain from now on). */
-  attach(dog: DogCharacter, anchor: THREE.Object3D, floorY: number): DogBrain;
+  /** Give the placed pet a brain (anchor = the Group holding pet.root, owned by the brain from now on). */
+  attach(pet: PetCharacter, anchor: THREE.Object3D, floorY: number): DogBrain;
   readonly brain: DogBrain | null;
-  readonly dog: DogCharacter | null;
+  readonly dog: PetCharacter | null;
   readonly detectorState: DetectorState;
   /** Starts loading the detector (once per page; later sessions reuse it). */
   ensureDetector(): void;
@@ -169,13 +183,15 @@ export interface DogPlay {
   dispose(): void;
 }
 
-export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToScreen): DogPlay {
+/** `species` labels the buttons for this session's animal; dispose() puts the dog labels back. */
+export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToScreen, species: Species): DogPlay {
+  const labels = PLAY_LABELS[species];
   // ---- All state first (setup calls below use it; avoids temporal-dead-zone crashes) ----
   const fx = createPetFx(scene);
   const occluder = createHandOccluder(scene);
   const ctx = ui.visionCanvas.getContext("2d");
   const cleanups: (() => void)[] = [];
-  let dog: DogCharacter | null = null;
+  let dog: PetCharacter | null = null;
   let brain: DogBrain | null = null;
   let unsubPet: (() => void) | null = null;
   let dogClock = 0;
@@ -225,12 +241,21 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     { button: ui.cmdLie, cmd: () => (brain?.posture === "lie" ? "stand" : "lie") },
     { button: ui.cmdCome, cmd: () => "come" },
     { button: ui.cmdMode, cmd: () => (brain?.mode === "follow" ? "free" : "follow") },
-    { button: ui.trickRollOver, cmd: () => "rollOver" },
-    { button: ui.trickJump, cmd: () => "jump" },
-    { button: ui.trickSpin, cmd: () => "spin" },
+    { button: ui.trick1, cmd: () => labels.tricks[0] },
+    { button: ui.trick2, cmd: () => labels.tricks[1] },
+    { button: ui.trick3, cmd: () => labels.tricks[2] },
   ];
 
   // ---- Helpers (function declarations: hoisted) ----
+  function setLabels(l: PlayLabels) {
+    ui.cmdSit.textContent = l.sit;
+    ui.cmdLie.textContent = l.lie;
+    ui.cmdCome.textContent = l.come;
+    ui.trick1.textContent = TRICK_LABEL[l.tricks[0]];
+    ui.trick2.textContent = TRICK_LABEL[l.tricks[1]];
+    ui.trick3.textContent = TRICK_LABEL[l.tricks[2]];
+  }
+
   function setStatus(text: string) {
     if (text === lastStatus) return;
     lastStatus = text;
@@ -272,10 +297,10 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     }
   }
 
-  function showChip(text: string) {
+  function showChip(text: string, seconds = VOICE_CHIP_S) {
     ui.voiceChip.textContent = text;
     ui.voiceChip.hidden = text === "";
-    voiceChipLeft = text === "" ? 0 : VOICE_CHIP_S;
+    voiceChipLeft = text === "" ? 0 : seconds;
   }
 
   function syncVoiceUI() {
@@ -285,7 +310,9 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     ui.voiceToggle.dataset.state = voiceState === "off" && voiceWanted ? "armed" : voiceState;
     ui.voiceToggle.title =
       voiceState === "denied"
-        ? "Microphone blocked — allow it in the browser's site settings"
+        ? IS_APPLE_TOUCH
+          ? "Voice blocked — turn on Dictation in iOS Settings → General → Keyboard and allow the microphone"
+          : "Microphone blocked — allow it in the browser's site settings"
         : on
           ? "Listening for commands — tap to turn off"
           : voiceWanted
@@ -317,9 +344,9 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     syncVoiceUI();
   }
 
-  /** The dog's name for addressing it by voice; "" when it has none (a placeholder would count as the name). */
+  /** The pet's name for addressing it by voice; "" when it has none (a placeholder would count as the name). */
   function dogName(): string {
-    return dogConfigStore.get().name.trim();
+    return (dog?.config.name ?? petStore.active()?.config.name ?? "").trim();
   }
 
   function clearExtendTimer() {
@@ -331,6 +358,12 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
 
   function fireIntent(command: DogCommand, phrase: string, speaker: number | null, nowMs: number) {
     if (!brain) return;
+    // Each species only animates its own three tricks (PLAY_LABELS): a dog trick said to a cat
+    // (or the reverse) would freeze it for the trick's duration, so say so instead.
+    if (command in TRICK_LABEL && !labels.tricks.includes(command as TrickKind)) {
+      showChip(`“${phrase}”: ${dogName() || "your pet"} doesn't know that trick`);
+      return;
+    }
     brain.command(command, speaker);
     party?.commanded(command);
     firedCmd = command;
@@ -338,7 +371,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     utteranceOpen = true;
     navigator.vibrate?.(12);
     syncButtons();
-    showChip(`“${phrase}”  →  ${command === "rollOver" ? "roll over" : command}`);
+    showChip(`“${phrase}”  →  ${command in TRICK_LABEL ? TRICK_LABEL[command as TrickKind].toLowerCase() : command}`);
   }
 
   function onVoiceResult(r: VoiceResult) {
@@ -393,7 +426,14 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     if (s === "denied") {
       voiceWanted = false;
       storageSet(VOICE_PREF_KEY, "0");
-      showChip("Microphone blocked — allow it in site settings");
+      // iOS Safari reports both a refused mic and disabled Dictation/Siri ("service-not-allowed") as a
+      // first-time refusal, so the message names both fixes. Longer than a normal chip: it needs reading.
+      showChip(
+        IS_APPLE_TOUCH
+          ? "Voice needs Dictation: Settings → General → Keyboard → Enable Dictation (and allow the microphone for Safari)"
+          : "Microphone blocked — allow it in site settings",
+        7,
+      );
     } else if (s === "off" && voiceWanted && voice && !(typeof document !== "undefined" && document.hidden)) {
       // Recogniser gave up (e.g. repeated network errors): say so rather than silently doing nothing.
       showChip("Voice stopped — tap 🎤 to retry");
@@ -552,9 +592,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     entry.button.addEventListener("click", onClick);
     cleanups.push(() => entry.button.removeEventListener("click", onClick));
   }
-  ui.trickRollOver.textContent = TRICK_LABEL.rollOver;
-  ui.trickJump.textContent = TRICK_LABEL.jump;
-  ui.trickSpin.textContent = TRICK_LABEL.spin;
+  setLabels(labels);
 
   const onToggle = () => setVision(!showVision);
   ui.visionToggle.addEventListener("click", onToggle);
@@ -593,11 +631,12 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       unsubPet?.();
       dog = newDog;
       dogClock = 0;
-      brain = createDogBrain(newDog, anchor, floorY);
+      brain = createPetBrain(newDog, anchor, floorY);
       party?.attach(newDog, anchor);
+      const cat = newDog.species === "cat";
       unsubPet = brain.onPetStart((zone, point) => {
         fx.burst(point, zone);
-        navigator.vibrate?.(zone === "head" ? 30 : [20, 40, 20]);
+        navigator.vibrate?.(cat ? (zone === "head" ? PURR_HEAD : PURR_BODY) : zone === "head" ? 30 : [20, 40, 20]);
       });
       syncButtons();
       return brain;
@@ -630,7 +669,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
           detectorState = "ready";
         },
         (err) => {
-          console.warn("[dog] hand detection unavailable", err);
+          console.warn("[pet] hand detection unavailable", err);
           if (!disposed) detectorState = "failed";
         },
       );
@@ -654,7 +693,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
         lastCamHadDepth = !!cam.depthAt; // depthMap itself is a lazy conversion: not touched here
         occluder.setCamera?.(cam);
       } catch (err) {
-        console.warn("[dog] detection failed", err);
+        console.warn("[pet] detection failed", err);
         return;
       }
     },
@@ -715,6 +754,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       setVision(false);
       setStatus("");
       for (const { button } of commandButtons) button.disabled = false;
+      setLabels(PLAY_LABELS.dog); // index.html's labels: nothing species-specific left for the next session
       fx.dispose();
       occluder.dispose();
       brain = null;

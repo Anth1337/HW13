@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import type { DogCharacter, DogConfig } from "./dog/types";
-import { createDogCharacter } from "./models/dog";
+import type { PetCharacter } from "./dog/types";
+import { createPetCharacter } from "./models/pet";
+import type { Pet } from "./pets";
 import { createShadowCatcher, shadowSizeFor } from "./shadow";
 
 const BASE_FOV = 40;
@@ -12,11 +13,12 @@ const VIEW_DIR = new THREE.Vector3(0.75, 0.32, 1).normalize();
 export type PreviewInsets = { bottom: number; right: number };
 
 /**
- * The start screen: a Blender-viewport-style view of the dog being customised, which you can
- * orbit. The dog is rebuilt (and the old one disposed) whenever the config changes; the camera
- * glides to frame the new size, so a dachshund and a shepherd both fill the view above the panel.
+ * The start screen: a Blender-viewport-style view of the pet being customised, which you can
+ * orbit. The pet is rebuilt (and the old one disposed) whenever it changes; the camera glides to
+ * frame the new size, so a kitten, a dachshund and a shepherd all fill the view above the panel.
+ * setPet(null) empties the stage (the menu), leaving just the grid.
  */
-export function createPreview(renderer: THREE.WebGLRenderer, initial: DogConfig) {
+export function createPreview(renderer: THREE.WebGLRenderer, initial: Pet | null) {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x393939); // Blender viewport grey
 
@@ -36,7 +38,7 @@ export function createPreview(renderer: THREE.WebGLRenderer, initial: DogConfig)
   controls.autoRotate = true;
   controls.autoRotateSpeed = 1.2;
 
-  let dog: DogCharacter | null = null;
+  let dog: PetCharacter | null = null;
   let shadow: THREE.Mesh | null = null;
   let grid: THREE.GridHelper | null = null;
   let gridSize = 0;
@@ -54,7 +56,7 @@ export function createPreview(renderer: THREE.WebGLRenderer, initial: DogConfig)
     glide = null; // the user takes over the zoom
   });
 
-  // Idle behaviour: every few seconds the dog glances at the camera and/or wags.
+  // Idle behaviour: every few seconds the pet glances at the camera and/or wags (any species: controls).
   let now = performance.now() / 1000;
   let lastTime = now;
   let nextEvent = now + 1.5;
@@ -66,16 +68,18 @@ export function createPreview(renderer: THREE.WebGLRenderer, initial: DogConfig)
   /** Horizontal centre of the dog's bounding box (y unused). */
   const center = new THREE.Vector3();
 
-  function setConfig(config: DogConfig) {
-    const next = createDogCharacter(config);
+  function setPet(pet: Pet | null) {
+    const next = pet ? createPetCharacter(pet) : null;
     if (dog) {
       scene.remove(dog.root);
       dog.dispose();
     }
     dog = next;
+    if (shadow) scene.remove(shadow); // shared geometry/material: nothing to dispose
+    shadow = null;
+    if (!dog) return; // empty stage: keep the grid and the current framing
     scene.add(dog.root);
 
-    if (shadow) scene.remove(shadow); // shared geometry/material: nothing to dispose
     shadow = createShadowCatcher(shadowSizeFor(dog));
     scene.add(shadow);
 
@@ -185,10 +189,11 @@ export function createPreview(renderer: THREE.WebGLRenderer, initial: DogConfig)
     c.excitement = excitement;
   }
 
-  setConfig(initial);
+  setPet(initial);
+  if (!initial) frame(true); // place the camera even with nothing on stage
 
   return {
-    setConfig,
+    setPet,
     render(time: number) {
       now = time / 1000;
       const dt = Math.min(0.1, Math.max(0, now - lastTime));
