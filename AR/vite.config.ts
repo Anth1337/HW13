@@ -11,4 +11,8 @@ export default defineConfig({
     host: true, // listen on the LAN, not just localhost
     allowedHosts: [".trycloudflare.com"], // Cloudflare quick tunnel (see README)
   },
+  preview: {
+    host: true,
+    allowedHosts: [".trycloudflare.com"], // Cloudflare quick tunnel (see README)
+  },
 });
