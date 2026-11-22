@@ -317,6 +317,30 @@ export function clearFeed(): void {
   feedBox?.replaceChildren();
 }
 
+let pinBox: HTMLElement | null = null;
+
+/** A line under the AR hint that stays until replaced or cleared (null): a step the user has to do. */
+export function pinnedNote(text: string | null): void {
+  if (text === null) {
+    pinBox?.remove();
+    pinBox = null;
+    return;
+  }
+  if (!pinBox?.isConnected) {
+    const wrap = document.querySelector("#overlay .hint-wrap");
+    if (!wrap) return;
+    pinBox = el("div", "status-chip net-pin");
+    pinBox.setAttribute("aria-live", "polite");
+    wrap.append(pinBox);
+  }
+  pinBox.textContent = text;
+}
+
+/** The 📍 button in the AR tools: line up with friends (tap the same two floor spots). */
+export function alignButton(onClick: () => void): { el: HTMLButtonElement; remove(): void } | null {
+  return toolButton("📍", "Line up with friends", "Line up: tap the same two floor spots as your friends, so pets stand where they really are", onClick);
+}
+
 /** The 🐾 button in the AR tools (taps on it never reach the AR scene): this phone's pet goes to say hi to a friend's pet. Null if the tools are missing. */
 export function sayHiButton(onClick: () => void): { el: HTMLButtonElement; remove(): void } | null {
   return toolButton("🐾", "Say hi to a friend's pet", "Say hi: your pet goes to meet a friend's pet", onClick);

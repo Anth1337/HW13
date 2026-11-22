@@ -245,6 +245,28 @@ body {
   max-width: 420px;
 }
 
+.posture {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.posture[hidden] {
+  display: none;
+}
+
+.posture select {
+  font: inherit;
+  font-size: 16px; /* < 16px makes iOS Safari zoom the page on focus */
+  color: var(--fg);
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+}
+
 /* ---- "My pets" slot menu ---- */
 .menu {
   padding: 0 16px 12px;

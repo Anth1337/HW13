@@ -2,8 +2,8 @@ import "./style.css";
 import * as THREE from "three";
 import { requestMotionPermission, type MotionPermission } from "./tracking";
 import { primeAudio } from "./audio";
-import { primeVoice, releasePrimedVoice } from "./dogPlay";
-import { isCameraModeSupported, startCameraMode } from "./cameraMode";
+import { isIOS, primeVoice, releasePrimedVoice } from "./dogPlay";
+import { getPosture, isCameraModeSupported, setPosture, startCameraMode, type HoldPosture } from "./cameraMode";
 import { mountCreator } from "./creator";
 import { mountMenu } from "./menu";
 import { petName, petStore } from "./pets";
@@ -24,9 +24,6 @@ const creatorEl = $("creator");
 const backButton = $<HTMLButtonElement>("btn-back");
 const ui: ARUI = arUIFromDOM();
 
-/** iPhone / iPad (iPadOS reports itself as a Mac with touch). */
-const isIOS = () =>
-  /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.userAgent.includes("Macintosh") && navigator.maxTouchPoints > 1);
 
 initNet(); // joins ?room=… when opened from an invite (a first-time guest gets a ready-made pet)
 
@@ -79,7 +76,8 @@ const doneChecking = () => home.classList.remove("checking");
  */
 function setup3D() {
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  // iPhone (DPR 3): 1.5 keeps the GPU / main thread free for the tracker and the detector.
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, isIOS() ? 1.5 : 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFShadowMap; // PCFSoftShadowMap was removed in three r187
@@ -205,8 +203,14 @@ async function init(view: View) {
   // 2. iPhone / iPad: no WebXR AR. Deploy = camera mode with our own world tracking (src/tracking).
   if (isIOS()) {
     doneChecking();
+    if (camera) {
+      const posture = $<HTMLSelectElement>("posture");
+      posture.value = getPosture();
+      posture.addEventListener("change", () => setPosture(posture.value as HoldPosture));
+      $("posture-wrap").hidden = false;
+    }
     homeText.textContent = camera
-      ? "Pick a pet and deploy it. Point at the floor, walk slowly, then tap to place it."
+      ? "Pick a pet and deploy it. Hold the phone at chest height, point at the floor, walk slowly, then tap to place it."
       : window.isSecureContext
         ? "This browser can't open the camera."
         : "Camera and tracking need HTTPS: open this page through an https:// address.";

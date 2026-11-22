@@ -49,10 +49,13 @@ Every change shows up on the pet straight away and is saved.
 iOS Safari has no WebXR, so **Deploy** on iOS runs our own tracker (`src/tracking/`) over the live camera:
 
 - **Rotation** from the phone's gyro + gravity (DeviceOrientation / DeviceMotion).
-- **Position** from visual odometry on the **floor plane**: features on the floor are tracked in the (small, rotation-compensated) camera image and solved for metric translation using an **assumed camera height** (about 1.3 m). After that the height follows the phone (crouching or lowering it to pet the pet moves the 3D camera down too) whenever the floor solve is trustworthy. Your hands are masked out of the floor tracking, so a reaching hand is not mistaken for the phone moving. Accelerometer / zero-velocity damping covers moments with nothing to track.
-- **Video sync:** the camera image on screen is already 60–150 ms old (it varies by phone), while the gyro is current. The tracker measures that delay continuously by matching how far the image shifts against how far the gyro says the phone turned (`src/tracking/videoSync.ts`), and the 3D camera is rendered with the pose of the frame that is actually on screen (`getDisplayPose`), so the pet stays locked to the room when you turn instead of swimming ahead of it. The same measurement gives the odometry the right instant for each frame, which cuts the false drift turning causes. It also measures the lens field of view, which replaces the assumed ~65° only when the stream is clearly different (more than 10% off, e.g. a cropped or zoomed camera). In simulation (a phone looking around at a textured floor, 50–72° lenses, 70–140 ms camera delay) this cut the misalignment while turning from about 20–35 px to about 5 px on a phone screen, and the drift while turning in place by up to half.
+- **Position** from visual odometry on the **floor plane**: features on the floor are tracked in the (small, rotation-compensated) camera image and solved for metric translation using an **assumed camera height**: 1.3 m, or 0.9 m when **Phone held: sitting** is picked next to Deploy (remembered in this browser). After that the height follows the phone (crouching or lowering it to pet the pet moves the 3D camera down too) whenever the floor solve is trustworthy. Your hands are masked out of the floor tracking, so a reaching hand is not mistaken for the phone moving. When there is nothing to track, the position is held (the accelerometer is not integrated: it drifts metres within seconds).
+- **Video sync:** the camera image on screen is already 60–150 ms old (it varies by phone), while the gyro is current. The tracker measures that delay continuously by matching how far the image shifts against how far the gyro says the phone turned (`src/tracking/videoSync.ts`), and the 3D camera is rendered with the pose of the frame that is actually on screen (`getDisplayPose`), so the pet stays locked to the room when you turn instead of swimming ahead of it. The same measurement gives the odometry the right instant for each frame, which cuts the false drift turning causes. It also measures the lens field of view, which replaces the assumed ~65° once a few estimates agree it is more than 4% off (real phone video is often 5–10% off the guess, which made the pet swim on pans). In simulation (a phone looking around at a textured floor, 50–72° lenses, 70–140 ms camera delay) this cut the misalignment while turning from about 20–35 px to about 5 px on a phone screen, and the drift while turning in place by up to half.
 - The dog is placed on the floor plane (tap, as on Android), kept world-anchored, and you tap the floor to send it, long-press to re-place it.
-- Tip shown before Deploy: point the phone at the floor and walk slowly.
+- Tip shown before Deploy and while scanning: hold the phone at chest height, point it at the floor and walk slowly.
+- Coming back to the app (app switch, lock screen) restarts the video, re-zeroes the tracker and puts the pet back in front of you.
+- iPhone runs lighter: render pixel ratio 1.5, 512 px shadow map, at most 2 hands / 2 faces and no body model, and the detector gets the video scaled down to 384 px.
+- `npm run check:tracking` simulates turning, portrait frames and walking while looking around (at least 80% of the walked distance must be tracked; before the fix it was 60–70%).
 
 Honest limits (nobody has verified this on a real iPhone yet):
 
@@ -101,7 +104,13 @@ Every phone brings its own pet to the party, and everyone sees everyone's pets.
 
 What is shared: each pet's look and name, where it is and what it's doing (about 10 updates a second, only while someone else is in the room). The camera image and audio never leave the phone. The room server only relays messages between the phones in a room and stores nothing.
 
-**Limit:** browsers can't share AR anchors between phones, so each phone shows friends' pets around its own pet rather than at the same real-world spot. For a demo, have everyone place their pet on the same spot (the table, or the printed QR code) and it looks shared.
+**Line up (📍)** so pets stand where they really are. Browsers can't share AR anchors between phones, so by default each phone shows friends' pets around its own pet. To share the room:
+
+1. Agree on two spots on the floor about 1–2 m apart (two corners of a rug, two table legs).
+2. Everyone taps **📍**, then taps spot 1, then spot 2, in the same order.
+3. Two orange rings mark the spots for a few seconds so you can check them.
+
+Between two lined-up phones a friend's pet is drawn at its real spot in the room, and meetings happen there too. A friend who hasn't lined up still stands next to your pet as before. The distance between the two spots is the unit, so an iPhone whose scale is off (it guesses the phone's height) still lands on the right spots. Taps are accurate to roughly 5–10 cm, which gives about 10–20 cm at a few metres. If an iPhone drifts, or its tracking restarts (coming back to the app), tap 📍 again. `npm run check:align` checks the math.
 
 ### Voice commands
 

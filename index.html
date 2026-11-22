@@ -29,6 +29,14 @@
       <button id="btn-back" type="button" class="cr-back" hidden>← My pets</button>
       <div id="creator" class="creator" aria-label="Customise your pet" hidden></div>
       <div id="home-actions" class="home-actions">
+        <!-- iOS only (main.ts): how high the phone is held sets the tracker's whole scale. -->
+        <label id="posture-wrap" class="posture" hidden>
+          Phone held
+          <select id="posture">
+            <option value="standing">standing</option>
+            <option value="sitting">sitting</option>
+          </select>
+        </label>
         <button id="btn-deploy" type="button" class="btn btn-primary" hidden>Deploy</button>
       </div>
     </div>

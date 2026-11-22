@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { PetCharacter, PetZones, TrickKind } from "../dog/types";
 import { petGaitInfo } from "../models/pet";
 import type { PetCard } from "./protocol";
-import { applyControls, lerp, lerpAngle, wrapAngle, type PetState } from "./sync";
+import { applyControls, fromShared, lerp, lerpAngle, wrapAngle, type PetState, type SharedFrame } from "./sync";
 
 /*
  * A friend's pet on this phone: their model, posed every frame from their state snapshots,
@@ -72,6 +72,8 @@ export class RemotePet {
   /** Where this phone walks the pet while meeting / walking back (null = replayed from snapshots). */
   private walk: { x: number; z: number; yaw: number; v: number; phase: number } | null = null;
   private readonly vWalk: number;
+  /** Scratch: the lined-up spot (world floor x / z). */
+  private readonly spot = { x: 0, z: 0 };
   /** A hand is near: the offset around the slot is frozen (see hold()). */
   private holdUntil = -Infinity;
   private holding = false;
@@ -152,8 +154,12 @@ export class RemotePet {
     return nowMs < this.holdUntil;
   }
 
-  /** Pose for now, standing in `slot` (x right, z towards the viewer, metres) of `stage`. */
-  update(dt: number, nowMs: number, stage: Stage, slotX: number, slotZ: number): void {
+  /**
+   * Pose for now, standing in `slot` (x right, z towards the viewer, metres) of `stage`; or, when
+   * this phone and the owner are both lined up (`shared` here, `w` in the snapshots), where the
+   * pet really is in the room.
+   */
+  update(dt: number, nowMs: number, stage: Stage, slotX: number, slotZ: number, shared: SharedFrame | null): void {
     const n = this.snaps.length;
     if (n === 0 || this.clockOffset === null) return;
     const renderT = nowMs - this.clockOffset - INTERP_DELAY_MS;
@@ -193,13 +199,29 @@ export class RemotePet {
     c.petBody = Math.max(c.petBody, this.body);
     c.excitement = Math.max(c.excitement, Math.max(this.head, this.body));
 
-    // Owner's offset from their placement point, squeezed into WANDER_RADIUS around the slot.
-    const rx = lerp(a.x, b.x, u);
-    const rz = lerp(a.z, b.z, u);
-    const r = Math.hypot(rx, rz);
-    const squeeze = r > 1e-6 ? (WANDER_RADIUS * Math.tanh(r / WANDER_RADIUS)) / r : 1;
-    let ox = slotX + rx * squeeze;
-    let oz = slotZ + rz * squeeze;
+    const cs = Math.cos(stage.yaw);
+    const sn = Math.sin(stage.yaw);
+    const aw = a.w;
+    const bw = b.w;
+    let ox: number;
+    let oz: number;
+    if (shared && aw && bw) {
+      // Lined up: the real spot in the room, as an offset in this phone's stage frame (so the
+      // hold-under-hand freeze below works the same in both layouts).
+      const p = fromShared(shared, lerp(aw[0], bw[0], u), lerp(aw[1], bw[1], u), this.spot);
+      const dx = p.x - stage.x;
+      const dz = p.z - stage.z;
+      ox = cs * dx - sn * dz;
+      oz = sn * dx + cs * dz;
+    } else {
+      // Owner's offset from their placement point, squeezed into WANDER_RADIUS around the slot.
+      const rx = lerp(a.x, b.x, u);
+      const rz = lerp(a.z, b.z, u);
+      const r = Math.hypot(rx, rz);
+      const squeeze = r > 1e-6 ? (WANDER_RADIUS * Math.tanh(r / WANDER_RADIUS)) / r : 1;
+      ox = slotX + rx * squeeze;
+      oz = slotZ + rz * squeeze;
+    }
     // Hold still under a hand: freeze the offset on entry, ease back to the replayed one on release.
     // Not while meeting / walking: those place the pet themselves.
     const held = nowMs < this.holdUntil && !this.meet && !this.walk;
@@ -222,10 +244,9 @@ export class RemotePet {
       oz = lerp(oz, this.heldOz, this.holdBlend);
       c.gait.speed *= 1 - this.holdBlend; // standing under the hand, not walking on the spot
     }
-    const cs = Math.cos(stage.yaw);
-    const sn = Math.sin(stage.yaw);
     this.anchor.position.set(stage.x + cs * ox + sn * oz, stage.y, stage.z - sn * ox + cs * oz);
-    this.anchor.rotation.set(0, stage.yaw + lerpAngle(a.h, b.h, u), 0);
+    const yaw = shared && aw && bw ? shared.yaw + lerpAngle(aw[2], bw[2], u) : stage.yaw + lerpAngle(a.h, b.h, u);
+    this.anchor.rotation.set(0, yaw, 0);
     if (this.meet && !this.meet.stand && !this.walk) this.lookAtMeet(this.meet);
     else if (this.meet || this.walk) this.walkMeet(dt);
 

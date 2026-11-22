@@ -1,6 +1,7 @@
 // Simulated iPhone (orientation + gyro events, camera frames of a textured floor delivered late)
 // through the real WorldTracker. Checks that the measured camera latency is close to the truth and
-// that the render pose (getDisplayPose) matches the frame on screen ("the pet sticks").
+// that the render pose (getDisplayPose) matches the frame on screen ("the pet sticks"), that the
+// lens FOV is measured, and that walking while looking around keeps most of the distance.
 // Run: npm run check:tracking
 import { createWorldTracker, deviceQuaternion } from "../node_modules/.cache/tracking.mjs";
 
@@ -10,9 +11,12 @@ const FPS = 30;
 const GYRO = true;
 const ORI_HZ = 60;
 const H = 1.3;
-const W = 192, HH = 144;
+// Frame size of the grabbed (downscaled) video: landscape 192x144 or portrait 108x192 (a phone held upright).
+const W = CASE.w ?? 192, HH = CASE.h ?? 144;
+const V = CASE.v ?? 0; // walking speed (m/s) along device-world -z, starting once the turning has ramped in
+const camZ = (t) => -V * Math.max(0, t - 4500) / 1000;
 const FOV_TRUE = CASE.fov;
-const F = W / 2 / Math.tan((FOV_TRUE * Math.PI) / 360);
+const F = Math.max(W, HH) / 2 / Math.tan((FOV_TRUE * Math.PI) / 360);
 
 // Phone motion: pointing down at the floor (beta ~ 50 deg), looking around (alpha), slight roll.
 // Still for the first 2 s (the tracker zeroes yaw at its first sample; the test aligns frames then), then ramps in.
@@ -48,7 +52,7 @@ const grabber = {
     for (let py = 0; py < HH; py++) for (let px = 0; px < W; px++) {
       const d = rot(q, [(px + 0.5 - W / 2) / F, -(py + 0.5 - HH / 2) / F, -1]);
       let val = 90;
-      if (d[1] < -1e-3) { const t = H / -d[1]; val = tex(d[0] * t, d[2] * t); }
+      if (d[1] < -1e-3) { const t = H / -d[1]; val = tex(d[0] * t, camZ(this.frameT - LAG) + d[2] * t); }
       this.gray[py * W + px] = Math.max(0, Math.min(255, val));
     }
     return true;
@@ -102,24 +106,47 @@ for (; clock < END; clock += 1) {
 }
 const rms = (a) => Math.sqrt(a.reduce((m, v) => m + v * v, 0) / a.length);
 const toPx = (deg) => ((deg * Math.PI) / 180) * (390 / 2 / Math.tan((60 * Math.PI) / 360)); // 390 px wide phone screen
-return { lag: LAG, fov: FOV_TRUE, latency: tracker.latencyMs, measuredFov: tracker.fovLongSideDeg, oldPx: toPx(rms(errOld)), newPx: toPx(rms(errNew)), drift: Math.max(...posDrift) };
+const fp = tracker.getFramePose(pose());
+return {
+  lag: LAG, fov: FOV_TRUE, latency: tracker.latencyMs, measuredFov: tracker.fovLongSideDeg,
+  oldPx: toPx(rms(errOld)), newPx: toPx(rms(errNew)), drift: Math.max(...posDrift),
+  walked: Math.abs(camZ(grabber.frameT - LAG)), tracked: Math.hypot(fp.position.x, fp.position.z),
+};
 }
 
+const PORTRAIT = { w: 108, h: 192 };
 const CASES = [
   { lag: 110, fov: 65 },
   { lag: 70, fov: 58 },
   { lag: 140, fov: 72 },
   { lag: 100, fov: 50 },
+  // Portrait: the narrow axis makes the latency fit ~10 ms coarser; FOV must still be measured.
+  { lag: 110, fov: 65, ...PORTRAIT, fovTol: 0.05 },
+  { lag: 70, fov: 58, ...PORTRAIT, fovTol: 0.05 },
+  // Walking at 0.3 m/s while looking around: at least 80 % of the distance must be tracked.
+  { lag: 110, fov: 65, v: 0.3 },
+  { lag: 110, fov: 65, v: 0.3, ...PORTRAIT },
 ];
 let failed = 0;
 for (const c of CASES) {
   const r = simulate(c);
-  const ok = Math.abs(r.latency - c.lag) < 15 && r.newPx < 10 && r.newPx < r.oldPx / 2;
+  const shape = c.w ? `${c.w}x${c.h}` : "192x144";
+  let ok, detail;
+  if (c.v) {
+    ok = r.tracked > 0.8 * r.walked && r.tracked < 1.15 * r.walked;
+    detail = `walked ${r.walked.toFixed(2)} m, tracked ${r.tracked.toFixed(2)} m (${((100 * r.tracked) / r.walked).toFixed(0)} %)`;
+  } else {
+    // Portrait must measure the lens; landscape must at least not end up worse than the 65 deg guess.
+    const fovOk = c.fovTol
+      ? Math.abs(r.measuredFov - c.fov) / c.fov < c.fovTol
+      : Math.abs(r.measuredFov - c.fov) <= Math.abs(65 - c.fov) + 0.5;
+    ok = Math.abs(r.latency - c.lag) < 15 && r.newPx < 10 && r.newPx < r.oldPx / 2 && fovOk;
+    detail =
+      `measured ${r.latency.toFixed(0)} ms / ${r.measuredFov.toFixed(1)} deg; ` +
+      `swim ${r.oldPx.toFixed(1)} px (pose of now) -> ${r.newPx.toFixed(1)} px (pose of the frame on screen); drift turning in place ${r.drift.toFixed(2)} m`;
+  }
   if (!ok) failed++;
-  console.log(
-    `${ok ? "ok  " : "FAIL"} camera delay ${c.lag} ms / FOV ${c.fov} deg: measured ${r.latency.toFixed(0)} ms / ${r.measuredFov.toFixed(1)} deg; ` +
-      `swim ${r.oldPx.toFixed(1)} px (pose of now) -> ${r.newPx.toFixed(1)} px (pose of the frame on screen); drift turning in place ${r.drift.toFixed(2)} m`,
-  );
+  console.log(`${ok ? "ok  " : "FAIL"} ${shape} camera delay ${c.lag} ms / FOV ${c.fov} deg${c.v ? ` / walking ${c.v} m/s` : ""}: ${detail}`);
 }
 if (failed) {
   console.error(`tracking: ${failed} case(s) failed`);

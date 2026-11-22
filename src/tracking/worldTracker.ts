@@ -40,7 +40,10 @@ const MIN_INTERVAL_MS = 30; // <= 33 Hz: every frame of a 30 fps camera when the
 const MAX_INTERVAL_MS = 120;
 const POS_RING = 64;
 /** Relative FOV disagreement before the measured FOV replaces the configured one. */
-const FOV_OVERRIDE = 0.1;
+const FOV_OVERRIDE = 0.04;
+const FOV_OVERRIDE_LANDSCAPE = 0.1;
+/** Accepted (smoothed) estimates needed before the measured FOV may replace the configured one. */
+const FOV_MIN_ESTIMATES = 3;
 /** Longest the display pose extrapolates position past the newest odometry sample. */
 const MAX_POS_EXTRAPOLATION_MS = 80;
 /**
@@ -89,8 +92,11 @@ export async function requestMotionPermission(): Promise<MotionPermission> {
   if (pending.length === 0) return "granted";
   try {
     const r = await Promise.all(pending);
-    return r.every((s) => s === "granted") ? "granted" : "denied";
-  } catch {
+    if (r.every((s) => s === "granted")) return "granted";
+    console.warn("[tracking] motion permission not granted (orientation, motion):", r);
+    return "denied";
+  } catch (err) {
+    console.warn("[tracking] motion permission request failed", err);
     return "denied";
   }
 }
@@ -574,18 +580,23 @@ class WorldTrackerImpl implements WorldTracker {
   }
 
   /**
-   * A new focal length was measured. The measurement is good to roughly ±5 % (scene-dependent:
-   * turning while looking down adds image roll), which is about how far a typical phone's video
-   * FOV is from the default, so it only takes over when it says the configured FOV is clearly
-   * wrong (> FOV_OVERRIDE): a zoomed / cropped stream or an unusual camera. The latency estimate
-   * is much tighter and is always used.
+   * A new focal length was measured. Each raw estimate is good to roughly ±5 % (scene-dependent:
+   * turning while looking down adds image roll), but videoSync smooths them, so once a few are in
+   * (FOV_MIN_ESTIMATES) a disagreement above FOV_OVERRIDE replaces the configured guess. A real
+   * phone's video FOV is often 5-10 % off the 65 deg default, and that much makes the pet swim on
+   * pans. The latency estimate is much tighter and is always used.
    */
   private applyMeasuredFocal(w: number, h: number): void {
     const long = Math.max(w, h);
     const fov = (2 * Math.atan(long / 2 / this.sync.focalPx) * 180) / Math.PI;
     if (!(fov > 40 && fov < 95)) return; // implausible for a phone's main camera: ignore
     const base = this.configuredFov;
-    if (Math.abs(fov - base) / base < FOV_OVERRIDE) {
+    // Portrait (the normal iPhone grab) measures accurately; a landscape grab reads ~5-7 % low in
+    // simulation, so it keeps the old 10 %. Hysteresis: once overriding, it only lets go well
+    // inside the threshold, so a FOV near the edge can't flip back and forth.
+    const engage = h > w ? FOV_OVERRIDE : FOV_OVERRIDE_LANDSCAPE;
+    const limit = this.fovDeg !== base ? engage * 0.6 : engage;
+    if (this.sync.accepted < FOV_MIN_ESTIMATES || Math.abs(fov - base) / base < limit) {
       if (this.fovDeg !== base) {
         this.fovDeg = base; // back within tolerance of the configured value: keep that
         this.odo?.setFov(base);

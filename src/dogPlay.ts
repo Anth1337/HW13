@@ -65,11 +65,19 @@ export const PLAY_LABELS: Record<Species, PlayLabels> = {
 
 export const MODE_LABEL: Record<DogMode, string> = { follow: "Follow", free: "Free roam", stay: "Stay" };
 
+/** iPhone / iPad (iPadOS reports itself as a Mac with touch). */
+export const isIOS = () =>
+  /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.userAgent.includes("Macintosh") && navigator.maxTouchPoints > 1);
+
 // ---- Detector: loaded once per page and kept (MediaPipe models are several MB) ----
 let detectorPromise: Promise<VisionDetector> | null = null;
 function loadDetector(): Promise<VisionDetector> {
   if (!detectorPromise) {
-    detectorPromise = createVisionDetector({ maxHands: 4, maxFaces: 4, maxBodies: 3 });
+    // iPhone runs our own tracker on the same main thread: fewer people, no body model (bodies
+    // only refine who-is-who; faces still give eye contact for up to two people).
+    detectorPromise = createVisionDetector(
+      isIOS() ? { maxHands: 2, maxFaces: 2, maxBodies: 0 } : { maxHands: 4, maxFaces: 4, maxBodies: 3 },
+    );
     detectorPromise.catch(() => (detectorPromise = null)); // a later session may retry
   }
   return detectorPromise;
@@ -185,6 +193,12 @@ export interface DogPlay {
   handOcclusion: boolean;
   /** A mode-specific message for the status chip (null clears it). */
   setNote(text: string | null): void;
+  /** A tap on the floor (world point). True if it was taken (lining up with friends): don't send the pet. */
+  floorTap(point: THREE.Vector3): boolean;
+  /** False while the camera isn't world-tracked: no lining up with friends. */
+  alignable: boolean;
+  /** The world origin moved (tracker re-zeroed). */
+  worldReset(): void;
   readonly perception: Perception;
   /**
    * Image boxes (uv over the whole detected frame, v down) of the hands in the latest detection,
@@ -796,6 +810,14 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       if (text !== note) noteAge = 0;
       note = text;
     },
+    floorTap: (point) => !!party?.floorTap(point),
+    get alignable() {
+      return party?.alignable ?? false;
+    },
+    set alignable(on: boolean) {
+      if (party) party.alignable = on;
+    },
+    worldReset: () => party?.worldReset(),
     dispose() {
       if (disposed) return;
       disposed = true;

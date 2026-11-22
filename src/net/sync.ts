@@ -9,6 +9,7 @@ import { TRICK_DURATION, type DogCommand, type DogControls, type TrickKind } fro
  * phone is built once from its pet card and then driven by these snapshots; no brain runs there.
  * Position is relative to where the owner placed the pet, in that placement's frame (+z points
  * at the owner as it was at placement), so every phone can stand friends' pets next to its own.
+ * Once both phones are lined up (SharedFrame below) `w` puts the pet where it really is instead.
  */
 
 export interface PetState {
@@ -28,6 +29,41 @@ export interface PetState {
   p: [number, number, number] | null;
   /** Running trick and its progress, or null. */
   k: [TrickKind, number] | null;
+  /** Position and heading in the room's shared floor frame (toShared), or null: this phone isn't lined up. */
+  w: [number, number, number] | null;
+}
+
+/**
+ * The room's shared floor frame ("line up", party.ts): every phone taps the same two real floor
+ * spots A then B. Origin A, +x towards B, and the unit is |AB| as measured on that phone, so a
+ * phone whose tracking scale is off (iOS: assumed camera height) still lands on the same spots.
+ * Position/yaw use the same convention as a placement Stage (three.js rotation.y).
+ */
+export type SharedFrame = { x: number; y: number; z: number; yaw: number; unit: number };
+
+export function sharedFrame(a: { x: number; y: number; z: number }, b: { x: number; z: number }): SharedFrame | null {
+  const dx = b.x - a.x;
+  const dz = b.z - a.z;
+  const unit = Math.hypot(dx, dz);
+  return unit > 1e-6 ? { x: a.x, y: a.y, z: a.z, yaw: Math.atan2(-dz, dx), unit } : null;
+}
+
+/** World floor point + heading on this phone → shared [x, z, heading]. */
+export function toShared(f: SharedFrame, x: number, z: number, yaw: number): [number, number, number] {
+  const dx = x - f.x;
+  const dz = z - f.z;
+  const cs = Math.cos(f.yaw);
+  const sn = Math.sin(f.yaw);
+  return [r3((cs * dx - sn * dz) / f.unit), r3((sn * dx + cs * dz) / f.unit), r3(wrapAngle(yaw - f.yaw))];
+}
+
+/** Shared x, z → this phone's world floor point (writes out.x / out.z). */
+export function fromShared<T extends { x: number; z: number }>(f: SharedFrame, sx: number, sz: number, out: T): T {
+  const cs = Math.cos(f.yaw);
+  const sn = Math.sin(f.yaw);
+  out.x = f.x + f.unit * (cs * sx + sn * sz);
+  out.z = f.z + f.unit * (-sn * sx + cs * sz);
+  return out;
 }
 
 export type PetEvent =
@@ -51,7 +87,7 @@ const COMMANDS = new Set<string>(["sit", "lie", "stand", "come", "follow", "free
 const r3 = (v: number) => Math.round(v * 1000) / 1000;
 const vec = (v: THREE.Vector3 | null): [number, number, number] | null => (v ? [r3(v.x), r3(v.y), r3(v.z)] : null);
 
-export function writeState(t: number, x: number, z: number, h: number, c: DogControls): PetState {
+export function writeState(t: number, x: number, z: number, h: number, c: DogControls, w: PetState["w"] = null): PetState {
   return {
     t: Math.round(t),
     x: r3(x),
@@ -62,6 +98,7 @@ export function writeState(t: number, x: number, z: number, h: number, c: DogCon
     l: vec(c.lookAt),
     p: vec(c.petPoint),
     k: c.trick ? [c.trick.kind, r3(c.trick.progress)] : null,
+    w,
   };
 }
 
@@ -94,6 +131,9 @@ export function readState(d: unknown): PetState | null {
   const p = s.p === null ? null : nums(s.p, 3, -20, 20);
   if (t === null || x === null || z === null || h === null || !g || !c) return null;
   if ((s.l !== null && !l) || (s.p !== null && !p)) return null;
+  // Missing on phones from before "line up": not lined up.
+  const w = s.w === undefined || s.w === null ? null : nums(s.w, 3, -100, 100);
+  if (s.w !== undefined && s.w !== null && !w) return null;
   let k: [TrickKind, number] | null = null;
   if (s.k !== null) {
     const raw = s.k as unknown[];
@@ -111,6 +151,7 @@ export function readState(d: unknown): PetState | null {
     l: l as PetState["l"],
     p: p as PetState["p"],
     k,
+    w: w as PetState["w"],
   };
 }
 

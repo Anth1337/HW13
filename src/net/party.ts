@@ -6,8 +6,8 @@ import { currentRoom } from "./index";
 import { createPetModel, localPetCard, petBuzz, petName } from "./kinds";
 import { RemotePet, type MeetPose, type Stage } from "./remotePet";
 import type { Peer } from "./room";
-import { PET_REPEAT_MS, readEvent, readState, wrapAngle, writeState, type PetEvent } from "./sync";
-import { clearFeed, feed, sayHiButton } from "./ui";
+import { PET_REPEAT_MS, readEvent, readState, sharedFrame, toShared, wrapAngle, writeState, type PetEvent, type SharedFrame } from "./sync";
+import { alignButton, clearFeed, feed, pinnedNote, sayHiButton } from "./ui";
 
 /*
  * Multiplayer inside one AR / camera session (dogPlay.ts creates it when the page is in a room):
@@ -21,6 +21,9 @@ import { clearFeed, feed, sayHiButton } from "./ui";
  *    button): the two walk up nose to nose, sniff, then each does a trick that suits the other's
  *    species. Every phone plays it from its own layout (friends' pets stand in different spots on
  *    each phone): this phone's pet walks there with its brain, friends' pets with RemotePet.meet.
+ *  - "line up" (📍): browsers can't share AR anchors, so each player taps the same two real floor
+ *    spots (SharedFrame, sync.ts). Between two lined-up phones a friend's pet stands where it
+ *    really is in the room instead of in a slot next to this phone's pet.
  */
 
 export interface PartyLink {
@@ -32,6 +35,12 @@ export interface PartyLink {
   update(dt: number, perception: Perception): void;
   /** This phone's player commanded their pet (button or voice). */
   commanded(cmd: DogCommand): void;
+  /** A tap on the floor (world point). True if lining up took it (don't send the pet there). */
+  floorTap(point: THREE.Vector3): boolean;
+  /** False while the camera isn't world-tracked (iOS fallback): lining up means nothing then. */
+  alignable: boolean;
+  /** The world origin moved (iOS tracker re-zeroed): the line-up no longer holds. */
+  worldReset(): void;
   /** Friends' pets shown right now (their models), written into `out` (cleared first). */
   shownPets(out: PetCharacter[]): PetCharacter[];
   dispose(): void;
@@ -80,6 +89,10 @@ const SLOTS: [number, number][] = [
   [-0.55, -1.5],
 ];
 const SHOWN_COMMANDS: Partial<Record<DogCommand, string>> = { ...TRICK_LABEL, sit: "Sit", lie: "Lie down" };
+/** Line-up spots closer than this give a shaky heading (a 5 cm tap error is ~6° at 0.5 m). */
+const MIN_ALIGN_M = 0.5;
+/** The two line-up rings stay on the floor this long after lining up (to check them against the real spots). */
+const ALIGN_RINGS_MS = 6000;
 
 /** Meeting timeline (s from the start): walk over, sniff, tricks, done (everyone goes back). */
 const MEET_SNIFF_S = 3.5;
@@ -143,6 +156,19 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   let socialOn = false;
   let nextAutoMeetMs = performance.now() + rand(MEET_AUTO_MIN_S, MEET_AUTO_MAX_S) * 1000;
   const lastMetMs = new Map<string, number>();
+  // Line up: 0 = not lining up, 1 = waiting for spot 1, 2 = waiting for spot 2.
+  let alignStep: 0 | 1 | 2 = 0;
+  let shared: SharedFrame | null = null;
+  let alignable = true;
+  const spot1 = new THREE.Vector3();
+  const ringGeo = new THREE.RingGeometry(0.06, 0.085, 32).rotateX(-Math.PI / 2);
+  const ringMat = new THREE.MeshBasicMaterial({ color: 0xffa033, transparent: true, opacity: 0.9, depthWrite: false });
+  const rings = [new THREE.Mesh(ringGeo, ringMat), new THREE.Mesh(ringGeo, ringMat)];
+  for (const r of rings) {
+    r.visible = false;
+    scene.add(r);
+  }
+  let ringsUntilMs = -Infinity;
 
   const myName = () => petName(localPetCard());
   const ownerOf = (peer: Peer) => `${petName(peer.pet)}'s human`;
@@ -410,6 +436,62 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   });
   if (hi) hi.el.disabled = true;
 
+  // ---- Line up ----
+  /** The shared frame changed: friends' pets jump, so meetings planned around the old spots end. */
+  function setShared(f: SharedFrame | null) {
+    shared = f;
+    for (const m of [...meets]) endMeet(m);
+    for (const pet of pets.values()) pet.stopMeet();
+    align?.el.setAttribute("aria-pressed", String(!!f));
+  }
+  function cancelAlign() {
+    alignStep = 0;
+    pinnedNote(null);
+  }
+  const align = alignButton(() => {
+    if (!dog) return void feed("📍 Place your pet first");
+    if (alignStep) {
+      cancelAlign();
+      ringsUntilMs = -Infinity;
+      return void feed("📍 Line-up cancelled");
+    }
+    alignStep = 1;
+    feed("📍 Agree with your friends on 2 floor spots 1–2 m apart (e.g. two corners of a rug)");
+    pinnedNote("📍 Tap spot 1 · everyone taps the same 2 spots in the same order · 📍 to cancel");
+  });
+  if (align) {
+    align.el.disabled = true;
+    align.el.setAttribute("aria-pressed", "false");
+  }
+
+  function floorTap(p: THREE.Vector3): boolean {
+    if (!alignStep) return false;
+    const now = performance.now();
+    if (alignStep === 1) {
+      spot1.copy(p);
+      rings[0].position.set(p.x, p.y + 0.003, p.z);
+      rings[0].visible = true;
+      rings[1].visible = false;
+      alignStep = 2;
+      pinnedNote("📍 Now tap spot 2");
+      navigator.vibrate?.(10);
+      return true;
+    }
+    const f = Math.hypot(p.x - spot1.x, p.z - spot1.z) >= MIN_ALIGN_M ? sharedFrame(spot1, p) : null;
+    if (!f) {
+      feed(`📍 Too close to spot 1: pick spots at least ${MIN_ALIGN_M * 100} cm apart`);
+      return true;
+    }
+    rings[1].position.set(p.x, spot1.y + 0.003, p.z);
+    rings[1].visible = true;
+    ringsUntilMs = now + ALIGN_RINGS_MS;
+    cancelAlign();
+    setShared(f);
+    navigator.vibrate?.([10, 40, 10]);
+    feed("📍 Lined up! Friends who line up too show their pets where they really are");
+    return true;
+  }
+
   const friends = room.peers.size;
   const roomName = `👥 Room ${room.code.toUpperCase()}`;
   feed(
@@ -476,6 +558,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       anchor = newAnchor;
       stage = null;
       if (hi) hi.el.disabled = false;
+      if (align) align.el.disabled = !alignable;
     },
 
     beforeDogUpdate(dt) {
@@ -510,9 +593,11 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
           const dz = p.z - stage.z;
           const cs = Math.cos(stage.yaw);
           const sn = Math.sin(stage.yaw);
-          room.sendState(writeState(now, cs * dx - sn * dz, sn * dx + cs * dz, wrapAngle(anchor.rotation.y - stage.yaw), dog.controls));
+          const w = shared ? toShared(shared, p.x, p.z, anchor.rotation.y) : null;
+          room.sendState(writeState(now, cs * dx - sn * dz, sn * dx + cs * dz, wrapAngle(anchor.rotation.y - stage.yaw), dog.controls, w));
         }
       }
+      if (!alignStep && now > ringsUntilMs) rings[0].visible = rings[1].visible = false;
 
       for (const [id, pet] of pets) {
         const peer = room.peers.get(id);
@@ -521,7 +606,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
         if (!live) pet.stopMeet(); // shows up again where its owner has it, not at an old meeting spot
         if (!live || !stage) continue;
         const [sx, sz] = SLOTS[slots.get(id) ?? 0];
-        pet.update(dt, now, stage, sx, sz);
+        pet.update(dt, now, stage, sx, sz, shared);
         if (!seenPlaying.has(id)) {
           seenPlaying.add(id);
           feed(`🐾 ${petName(pet.card)} joined the party`);
@@ -534,6 +619,30 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
 
     commanded(cmd) {
       room.sendEvent({ k: "cmd", c: cmd } satisfies PetEvent);
+    },
+
+    floorTap,
+
+    get alignable() {
+      return alignable;
+    },
+    set alignable(on: boolean) {
+      if (on === alignable) return;
+      alignable = on;
+      if (align) align.el.disabled = !on || !dog;
+      if (!on) {
+        cancelAlign();
+        ringsUntilMs = -Infinity;
+        if (shared) setShared(null);
+      }
+    },
+
+    worldReset() {
+      const was = shared !== null || alignStep !== 0;
+      cancelAlign();
+      ringsUntilMs = -Infinity;
+      if (shared) setShared(null);
+      if (was) feed("📍 Tracking restarted: tap 📍 to line up again");
     },
 
     shownPets(out) {
@@ -552,6 +661,11 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       if (socialOn) hooks.social(null);
       socialOn = false;
       hi?.remove();
+      align?.remove();
+      pinnedNote(null);
+      for (const r of rings) r.removeFromParent();
+      ringGeo.dispose();
+      ringMat.dispose();
       clearFeed();
       dog = null;
       anchor = null;

@@ -9,7 +9,7 @@ import {
   type Projection,
 } from "./cameraPlacement";
 import type { PetCharacter } from "./dog/types";
-import { createDogPlay } from "./dogPlay";
+import { createDogPlay, isIOS } from "./dogPlay";
 import { createPetCharacter } from "./models/pet";
 import { petName, petStore, type Pet } from "./pets";
 import { createShadowCatcher, shadowSizeFor } from "./shadow";
@@ -52,8 +52,29 @@ import type { ARUI } from "./webxr";
 
 /** Assumed horizontal field of view across the LONG side of the camera image (typical phone main camera / webcam). */
 const LONG_SIDE_FOV_DEG = 65;
-/** Fallback virtual floor: the phone is held about chest height. */
-const FALLBACK_FLOOR_Y = -1.3;
+/**
+ * How high the phone is held (m). There is no depth on iOS web, so ALL tracked scale comes from
+ * this; it is also the fallback virtual floor. Picked on the home screen (main.ts), per browser.
+ */
+export const HOLD_HEIGHTS = { standing: 1.3, sitting: 0.9 } as const;
+export type HoldPosture = keyof typeof HOLD_HEIGHTS;
+const POSTURE_KEY = "ar-pets-posture";
+export function getPosture(): HoldPosture {
+  try {
+    return localStorage.getItem(POSTURE_KEY) === "sitting" ? "sitting" : "standing";
+  } catch {
+    return "standing";
+  }
+}
+export function setPosture(p: HoldPosture): void {
+  try {
+    localStorage.setItem(POSTURE_KEY, p);
+  } catch {
+    /* private mode: the choice just isn't remembered */
+  }
+}
+/** Long side of the image handed to the hand / face detector (the video itself is ~1280). */
+const DETECT_LONG_SIDE = 384;
 const DOG_DISTANCE = 1.6;
 const MIN_DISTANCE = 0.6;
 const MAX_DISTANCE = 5;
@@ -61,7 +82,7 @@ const MAX_DISTANCE = 5;
 const USER_AHEAD_FOLLOW = 0.75;
 const USER_AHEAD_FREE = 1.9;
 const MARKER_LIFE = 1.2;
-const SCAN_HINT = "Point the camera at the floor and move slowly";
+const SCAN_HINT = "Hold the phone at chest height, point it at the floor and move slowly";
 const DENIED_HINT =
   "Motion access was refused, so the dog stays in front of the camera. Allow Motion & Orientation Access in Safari settings, then reload.";
 const OFF_FLOOR_HINT = (name: string) =>
@@ -106,7 +127,8 @@ async function resolveMotion(
  *
  * `motion`: the promise from `requestMotionPermission()`, which the launcher must call
  * SYNCHRONOUSLY at the top of the click handler (iOS only shows the motion prompt from a user
- * gesture, which is gone after the first await). It is awaited here. "granted" starts tracked
+ * gesture, which is gone after the first await). It is awaited here, before the camera is opened,
+ * so the two permission sheets never overlap. "granted" starts tracked
  * mode; "denied" / "unavailable" (or a rejection) uses the fixed-camera fallback.
  */
 export async function startCameraMode(
@@ -122,16 +144,16 @@ export async function startCameraMode(
     throw new Error("No animal selected to deploy.");
   }
   const pet: Pet = active; // (a non-null const: callbacks below keep the narrowing)
-  let stream: MediaStream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: { facingMode: "environment", width: { ideal: 1280 } },
-    });
-  } catch (err) {
-    void motion?.catch(() => {}); // don't leave an unhandled rejection behind
-    throw err;
-  }
+  // Settle the motion prompt BEFORE asking for the camera: two permission sheets at once can get
+  // one auto-denied on iOS. iOS lets a FIRST camera prompt through without a fresh gesture; after a
+  // camera denial it may not re-prompt from here (reload, or allow the camera in Safari settings).
+  const permission = await resolveMotion(motion);
+  const holdHeight = HOLD_HEIGHTS[getPosture()];
+  const fallbackFloorY = -holdHeight;
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: "environment", width: { ideal: 1280 } },
+  });
   try {
     video.muted = true;
     video.playsInline = true;
@@ -151,7 +173,6 @@ export async function startCameraMode(
     video.srcObject = null;
     video.hidden = true;
     document.documentElement.classList.remove("camera-active");
-    void motion?.catch(() => {});
     throw err;
   }
 
@@ -161,10 +182,9 @@ export async function startCameraMode(
   let layoutFov = LONG_SIDE_FOV_DEG;
   let playRef: { dispose(): void } | null = null;
   try {
-    const permission = await resolveMotion(motion);
     if (permission === "granted" && motionSensorsLikelyAvailable()) {
       try {
-        tracker = createWorldTracker({ fovLongSideDeg: LONG_SIDE_FOV_DEG });
+        tracker = createWorldTracker({ fovLongSideDeg: LONG_SIDE_FOV_DEG, cameraHeight: holdHeight });
       } catch (err) {
         console.warn(
           "[camera] tracker failed to start; using the fixed camera",
@@ -177,7 +197,8 @@ export async function startCameraMode(
     scene.add(new THREE.HemisphereLight(0xffffff, 0x777777, 2.2));
     const sun = new THREE.DirectionalLight(0xffffff, 1.8);
     sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
+    const shadowRes = isIOS() ? 512 : 1024; // iPhone: GPU time goes to the tracker and the detector
+    sun.shadow.mapSize.set(shadowRes, shadowRes);
     sun.shadow.bias = -0.0005;
     sun.shadow.normalBias = 0.01;
     sun.shadow.camera.near = 0.1;
@@ -247,7 +268,7 @@ export async function startCameraMode(
     let dog: PetCharacter | null = null;
     let anchor: THREE.Group | null = null;
     let tracked = tracker !== null;
-    let floorY = tracked ? 0 : FALLBACK_FLOOR_Y;
+    let floorY = tracked ? 0 : fallbackFloorY;
     const floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), -floorY);
     const reticle = new Reticle(0);
     const press = new Press();
@@ -269,6 +290,22 @@ export async function startCameraMode(
       quaternion: new THREE.Quaternion(),
     };
     const proj: Projection = { w: 1, h: 1, tanX: 1, tanY: 1 };
+    // The detector gets the video scaled down (as the WebXR path does): MediaPipe resizes to its
+    // ~256 px model input anyway, so uploading the full ~1280 px frame per model is wasted work.
+    const detectCanvas = document.createElement("canvas");
+    const detectCtx = detectCanvas.getContext("2d");
+    const detectImage = (): HTMLVideoElement | HTMLCanvasElement => {
+      const s = DETECT_LONG_SIDE / Math.max(video.videoWidth, video.videoHeight);
+      if (!detectCtx || !(s < 1)) return video;
+      const w = Math.round(video.videoWidth * s);
+      const h = Math.round(video.videoHeight * s);
+      if (detectCanvas.width !== w || detectCanvas.height !== h) {
+        detectCanvas.width = w;
+        detectCanvas.height = h;
+      }
+      detectCtx.drawImage(video, 0, 0, w, h);
+      return detectCanvas;
+    };
     const canvas = renderer.domElement;
     let screenW = window.innerWidth;
     let screenH = window.innerHeight;
@@ -323,7 +360,7 @@ export async function startCameraMode(
       camera.fov = THREE.MathUtils.radToDeg(fov);
       camera.aspect = screenW / screenH;
       // Fallback: pitch down so the dog's default spot sits a little below the middle of the screen.
-      const toDogMid = Math.atan2(-(FALLBACK_FLOOR_Y + 0.3), DOG_DISTANCE);
+      const toDogMid = Math.atan2(-(fallbackFloorY + 0.3), DOG_DISTANCE);
       fallbackPitch = THREE.MathUtils.clamp(
         toDogMid - 0.15 * fov,
         THREE.MathUtils.degToRad(10),
@@ -449,15 +486,16 @@ export async function startCameraMode(
     function enterFallback() {
       if (!tracked) return;
       tracked = false;
+      play.alignable = false;
       tracker?.dispose();
       tracker = null;
       reticle.reset();
       reticleMesh.visible = false;
       holdRing.visible = false;
       press.abort();
-      setFloor(FALLBACK_FLOOR_Y);
+      setFloor(fallbackFloorY);
       applyFallbackPose();
-      placeAt(new THREE.Vector3(0, FALLBACK_FLOOR_Y, -DOG_DISTANCE), true);
+      placeAt(new THREE.Vector3(0, fallbackFloorY, -DOG_DISTANCE), true);
       flashHint(NO_SENSORS_HINT, 4);
     }
 
@@ -466,8 +504,9 @@ export async function startCameraMode(
     play.handOcclusion = true; // no depth API in camera mode
     play.ensureDetector();
     if (!tracked) {
-      setFloor(FALLBACK_FLOOR_Y);
-      placeAt(new THREE.Vector3(0, FALLBACK_FLOOR_Y, -DOG_DISTANCE), true);
+      play.alignable = false;
+      setFloor(fallbackFloorY);
+      placeAt(new THREE.Vector3(0, fallbackFloorY, -DOG_DISTANCE), true);
       if (permission === "denied") flashHint(DENIED_HINT, 6);
       else if (permission === "granted" && motionSensorsLikelyAvailable())
         flashHint(NO_SENSORS_HINT, 4);
@@ -529,6 +568,7 @@ export async function startCameraMode(
       }
       if (!play.brain) return;
       hitPoint.y = floorY;
+      if (tracked && play.floorTap(hitPoint)) return;
       play.brain.goTo(hitPoint);
       showMarker(hitPoint);
       navigator.vibrate?.(10);
@@ -629,7 +669,7 @@ export async function startCameraMode(
             q = framePose.quaternion;
           }
         }
-        play.see(video, time, new FrameCam(p, q, proj, videoUVToScreen));
+        play.see(detectImage(), time, new FrameCam(p, q, proj, videoUVToScreen));
       }
 
       // The brain's viewer: the camera itself when tracked; a point ahead on the virtual floor otherwise.
@@ -669,6 +709,29 @@ export async function startCameraMode(
       renderer.render(scene, camera);
     });
 
+    // ---- Back from the background (app switch, lock screen) ----
+    // Hidden: no frames, no motion events. On return the video can stay paused and the odometry
+    // would compare a pre-gap frame with a post-gap one, so restart the video, re-zero the
+    // tracker and put the pet back in front of the camera.
+    const onVisibility = () => {
+      if (document.hidden || ended) return;
+      now = performance.now() / 1000; // frames stopped while hidden: flashHint times from now
+      video.play().catch(() => {});
+      if (!tracked || !tracker) return;
+      tracker.recenter();
+      play.worldReset();
+      // The camera pose only refreshes in frame(): move it to the re-zeroed origin now so the pet
+      // placed below faces the camera, not where it was before the gap.
+      camera.position.set(0, tracker.cameraHeight + floorY, 0);
+      camera.updateMatrixWorld(true);
+      reticle.reset();
+      press.abort();
+      if (dog) {
+        placeAt(new THREE.Vector3(0, floorY, -DOG_DISTANCE), true);
+        flashHint(`Welcome back! Hold the floor to move ${dogName()}`, 3);
+      }
+    };
+
     // ---- Exit ----
     const onResize = () => layout();
     const end = () => {
@@ -688,6 +751,7 @@ export async function startCameraMode(
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
       window.removeEventListener("resize", onResize);
+      document.removeEventListener("visibilitychange", onVisibility);
       video.removeEventListener("resize", onResize);
       ui.exit.removeEventListener("click", end);
       for (const track of stream.getTracks())
@@ -708,6 +772,7 @@ export async function startCameraMode(
       onEnd();
     };
     window.addEventListener("resize", onResize);
+    document.addEventListener("visibilitychange", onVisibility);
     // The stream's intrinsic size can change without a window resize (resolution switch after
     // start, iOS swapping width/height on rotation): re-run the FOV / cover-crop / ray maths.
     video.addEventListener("resize", onResize);

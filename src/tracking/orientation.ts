@@ -31,7 +31,7 @@ export interface Quat {
 
 const DEG = Math.PI / 180;
 const HALF_SQRT = Math.sqrt(0.5);
-const HIST = 256;
+const HIST = 512; // > the 6 s latency / FOV calibration window at 60+ Hz
 
 function qMul(a: Quat, b: Quat, o: Quat): Quat {
   const x = a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y;
