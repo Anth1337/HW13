@@ -16,11 +16,19 @@ const INTERP_DELAY_MS = 150;
 /** After the newest snapshot the pose holds, legs still moving for this long (short dropouts). */
 const MAX_EXTRAPOLATE_MS = 250;
 const BUFFER = 12;
-const WANDER_RADIUS = 0.45;
+/*
+ * Small, so a friend's pet stays near its slot (within arm's reach of this phone's player, and
+ * clear of this phone's own pet) rather than drifting out from under a hand.
+ */
+const WANDER_RADIUS = 0.3;
 /** A petting event keeps the pet leaning in this long (events repeat every 250 ms). */
 const TOUCH_HOLD_MS = 600;
 /** How fast the clock offset may creep up per snapshot (ms): follows clock drift between phones. */
 const OFFSET_CREEP_MS = 0.05;
+/** A hand this near keeps the pet still for this long after the last hold() call (called every frame). */
+const HOLD_MS = 600;
+/** After a hold ends the pet eases back to the replayed spot with this time constant (s), not a jump. */
+const HOLD_EASE_S = 0.15;
 
 /** Where friends' pets gather on this phone: this phone's pet's placement (floor point + heading). */
 export type Stage = { x: number; y: number; z: number; yaw: number };
@@ -64,6 +72,15 @@ export class RemotePet {
   /** Where this phone walks the pet while meeting / walking back (null = replayed from snapshots). */
   private walk: { x: number; z: number; yaw: number; v: number; phase: number } | null = null;
   private readonly vWalk: number;
+  /** Scratch: the lined-up spot (world floor x / z). */
+  private readonly spot = { x: 0, z: 0 };
+  /** A hand is near: the offset around the slot is frozen (see hold()). */
+  private holdUntil = -Infinity;
+  private holding = false;
+  private heldOx = 0;
+  private heldOz = 0;
+  /** 1 while held, easing to 0 after release: how much of the frozen offset still applies. */
+  private holdBlend = 0;
 
   constructor(
     readonly card: PetCard,
@@ -124,6 +141,20 @@ export class RemotePet {
   }
 
   /**
+   * A hand is close to this pet: it stops wandering (the owner's movement is not replayed) so the
+   * hand does not lose it. Call every frame while the hand is near; it lets go HOLD_MS after the
+   * last call and eases back to where the snapshots put it.
+   */
+  hold(nowMs: number): void {
+    this.holdUntil = nowMs + HOLD_MS;
+  }
+
+  /** A hand on this phone is holding the pet still (see hold()): it should not walk off to meet. */
+  isHeld(nowMs: number): boolean {
+    return nowMs < this.holdUntil;
+  }
+
+  /**
    * Pose for now, standing in `slot` (x right, z towards the viewer, metres) of `stage`; or, when
    * this phone and the owner are both lined up (`shared` here, `w` in the snapshots), where the
    * pet really is in the room.
@@ -168,25 +199,54 @@ export class RemotePet {
     c.petBody = Math.max(c.petBody, this.body);
     c.excitement = Math.max(c.excitement, Math.max(this.head, this.body));
 
+    const cs = Math.cos(stage.yaw);
+    const sn = Math.sin(stage.yaw);
     const aw = a.w;
     const bw = b.w;
+    let ox: number;
+    let oz: number;
     if (shared && aw && bw) {
-      // Lined up: the real spot, on this phone's floor.
-      fromShared(shared, lerp(aw[0], bw[0], u), lerp(aw[1], bw[1], u), this.anchor.position).y = stage.y;
-      this.anchor.rotation.set(0, shared.yaw + lerpAngle(aw[2], bw[2], u), 0);
+      // Lined up: the real spot in the room, as an offset in this phone's stage frame (so the
+      // hold-under-hand freeze below works the same in both layouts).
+      const p = fromShared(shared, lerp(aw[0], bw[0], u), lerp(aw[1], bw[1], u), this.spot);
+      const dx = p.x - stage.x;
+      const dz = p.z - stage.z;
+      ox = cs * dx - sn * dz;
+      oz = sn * dx + cs * dz;
     } else {
       // Owner's offset from their placement point, squeezed into WANDER_RADIUS around the slot.
       const rx = lerp(a.x, b.x, u);
       const rz = lerp(a.z, b.z, u);
       const r = Math.hypot(rx, rz);
       const squeeze = r > 1e-6 ? (WANDER_RADIUS * Math.tanh(r / WANDER_RADIUS)) / r : 1;
-      const ox = slotX + rx * squeeze;
-      const oz = slotZ + rz * squeeze;
-      const cs = Math.cos(stage.yaw);
-      const sn = Math.sin(stage.yaw);
-      this.anchor.position.set(stage.x + cs * ox + sn * oz, stage.y, stage.z - sn * ox + cs * oz);
-      this.anchor.rotation.set(0, stage.yaw + lerpAngle(a.h, b.h, u), 0);
+      ox = slotX + rx * squeeze;
+      oz = slotZ + rz * squeeze;
     }
+    // Hold still under a hand: freeze the offset on entry, ease back to the replayed one on release.
+    // Not while meeting / walking: those place the pet themselves.
+    const held = nowMs < this.holdUntil && !this.meet && !this.walk;
+    if (held) {
+      if (!this.holding) {
+        this.holding = true;
+        this.heldOx = ox;
+        this.heldOz = oz;
+      }
+      this.holdBlend = 1;
+    } else {
+      // Eases out during a meet / walk too: walkMeet starts from wherever the pet is shown, so
+      // cutting the blend there would teleport it back to the replayed spot.
+      this.holding = false;
+      this.holdBlend *= Math.exp(-dt / HOLD_EASE_S);
+      if (this.holdBlend < 0.001) this.holdBlend = 0;
+    }
+    if (this.holdBlend > 0) {
+      ox = lerp(ox, this.heldOx, this.holdBlend);
+      oz = lerp(oz, this.heldOz, this.holdBlend);
+      c.gait.speed *= 1 - this.holdBlend; // standing under the hand, not walking on the spot
+    }
+    this.anchor.position.set(stage.x + cs * ox + sn * oz, stage.y, stage.z - sn * ox + cs * oz);
+    const yaw = shared && aw && bw ? shared.yaw + lerpAngle(aw[2], bw[2], u) : stage.yaw + lerpAngle(a.h, b.h, u);
+    this.anchor.rotation.set(0, yaw, 0);
     if (this.meet && !this.meet.stand && !this.walk) this.lookAtMeet(this.meet);
     else if (this.meet || this.walk) this.walkMeet(dt);
 

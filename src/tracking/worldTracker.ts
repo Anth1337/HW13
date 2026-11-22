@@ -1,4 +1,4 @@
-import type { MotionPermission, TrackedPose, TrackerState, WorldTracker, WorldTrackerOptions } from "./types";
+import type { ExclusionRect, MotionPermission, TrackedPose, TrackerState, WorldTracker, WorldTrackerOptions } from "./types";
 import { FloorOdometry, GrayFrameGrabber } from "./floorOdometry";
 import { OrientationFilter, type Quat } from "./orientation";
 import { VideoSyncCalibrator } from "./videoSync";
@@ -24,8 +24,10 @@ import { VideoSyncCalibrator } from "./videoSync";
  *    every turn instead of the dog leading the room. This is how native AR frameworks render too.
  *  - The FOV (setFov / WorldTrackerOptions) is a starting value; the measured focal length
  *    replaces it once there has been enough rotation (fovLongSideDeg reports the current value).
- *  - Camera height is the constructor value; no estimation (see README note): an error in it is
- *    a proportional error in all distances.
+ *  - Camera height: the constructor value is the metric scale reference (an error in it is a
+ *    proportional error in all distances). The odometry then follows the phone's real height
+ *    changes (crouching to pet the dog) when the floor solve is trustworthy; see floorOdometry.ts.
+ *  - setExclusion: image regions (hand, pet) the odometry ignores; kept across odometry rebuilds.
  *  - Position when nothing can be tracked is HELD (no accelerometer integration: double
  *    integrating phone accelerometers drifts meters within seconds and could not be validated).
  *  - 'unavailable' = no orientation sample with real numbers within 1.5 s of creation (desktop,
@@ -44,6 +46,12 @@ const FOV_OVERRIDE_LANDSCAPE = 0.1;
 const FOV_MIN_ESTIMATES = 3;
 /** Longest the display pose extrapolates position past the newest odometry sample. */
 const MAX_POS_EXTRAPOLATION_MS = 80;
+/**
+ * Low-pass cutoff of the camera height (Hz). The odometry already gates y (only trustworthy
+ * steps move it), so this is mainly anti-jitter: at 0.7 Hz a crouch to pet the dog took ~1 s to
+ * show, with the pet sliding on screen meanwhile.
+ */
+const Y_CUTOFF_HZ = 2.0;
 
 export interface TrackerEnv {
   /** Event target for deviceorientation / devicemotion / orientationchange (default: window). */
@@ -134,7 +142,7 @@ class PosFilter {
     const a = 1 - Math.exp(-d * 2 * Math.PI * cutoff);
     this.x += (tx - this.x) * a;
     this.z += (tz - this.z) * a;
-    this.y += (ty - this.y) * (1 - Math.exp(-d * 2 * Math.PI * 0.7));
+    this.y += (ty - this.y) * (1 - Math.exp(-d * 2 * Math.PI * Y_CUTOFF_HZ));
   }
 }
 
@@ -157,6 +165,7 @@ class WorldTrackerImpl implements WorldTracker {
 
   private readonly ori = new OrientationFilter();
   private odo: FloorOdometry | null = null;
+  private exclusion: readonly ExclusionRect[] = [];
   private readonly grabber: NonNullable<TrackerEnv["grabber"]>;
   private readonly target: EventTarget | null;
   private readonly nowFn: () => number;
@@ -313,6 +322,11 @@ class WorldTrackerImpl implements WorldTracker {
     this.sync.setDefaultFocal(focalForFov(longSideFovDeg, Math.max(this.grabber.width, this.grabber.height) || 192));
   }
 
+  setExclusion(rects: readonly ExclusionRect[]): void {
+    this.exclusion = rects;
+    this.odo?.setExclusion(rects);
+  }
+
   recenter(): void {
     this.ori.recenter();
     this.odo?.reset(0, this.h, 0);
@@ -402,6 +416,7 @@ class WorldTrackerImpl implements WorldTracker {
         const prev = this.odo?.position;
         this.odo = new FloorOdometry({ width: w, height: h, fovLongSideDeg: this.fovDeg, cameraHeight: this.h });
         this.odo.reset(prev ? prev.x : this.targetX, this.h, prev ? prev.z : this.targetZ);
+        this.odo.setExclusion(this.exclusion);
       }
       // Reference time of this frame, then its capture time from the measured latency.
       const tRef = this.referenceTime(video, now);

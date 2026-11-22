@@ -76,7 +76,21 @@ export interface WorldTracker {
   recenter(): void;
   /** Tell the tracker the screen / video geometry (long-side FOV in degrees) — improves the translation scale. */
   setFov(longSideFovDeg: number): void;
+  /**
+   * Image regions that are NOT floor (the user's hand, the pet), in normalised uv (v down) of the
+   * video frame passed to processFrame. Floor odometry neither seeds nor trusts features there, so
+   * a reaching hand is not read as the camera moving. Replaces the previous set; [] clears it.
+   */
+  setExclusion(rects: readonly ExclusionRect[]): void;
   dispose(): void;
+}
+
+/** Normalised image rectangle (uv of the upright video frame, v down). */
+export interface ExclusionRect {
+  u0: number;
+  v0: number;
+  u1: number;
+  v1: number;
 }
 
 export interface WorldTrackerOptions {

@@ -11,6 +11,8 @@ The start screen shows a **My pets** menu with **3 slots** in a panel (a bottom 
 - **Empty slot → + Create**: pick the kind of animal (**Dog 🐕** or **Cat 🐈**), and you go straight into the creator for your new pet.
 - **Filled slot**: tap it to select it (the preview shows it, and **Deploy** deploys it), then **Customise** to open the creator or **Delete** (asks to confirm first).
 - **← My pets** in the creator goes back to the menu.
+- **Drag the panel** (phones held upright): grab the bar at the top of the sheet, or the title, and drag it up to see many settings at once or down to see more of your pet. It snaps to three heights (small, half, nearly full screen) and a quick flick jumps to the next one. Tapping the bar switches between half and full. Below full height, dragging up anywhere on the settings grows the sheet; at full height the settings scroll as usual, and pulling down from the top shrinks it again. The height you pick is remembered.
+- **Section tabs** in the creator (Breed, Body, Coat, Face, Tail, Collar) stay pinned under the name: tap one to jump to that section; the tab for the section you're looking at lights up as you scroll.
 - Your pets, and which one was selected, are saved in the browser (`localStorage`, not cookies: there's no 4 KB limit and nothing is sent to a server), so the slots fill back in when you come back. They live in this browser on this device only; clearing site data deletes them. A dog saved by the older single-dog version is moved into slot 1.
 
 ### Dog creator
@@ -47,7 +49,7 @@ Every change shows up on the pet straight away and is saved.
 iOS Safari has no WebXR, so **Deploy** on iOS runs our own tracker (`src/tracking/`) over the live camera:
 
 - **Rotation** from the phone's gyro + gravity (DeviceOrientation / DeviceMotion).
-- **Position** from visual odometry on the **floor plane**: features on the floor are tracked in the (small, rotation-compensated) camera image and solved for metric translation using an **assumed camera height**: 1.3 m, or 0.9 m when **Phone held: sitting** is picked next to Deploy (remembered in this browser). When there is nothing to track, the position is held (the accelerometer is not integrated: it drifts metres within seconds).
+- **Position** from visual odometry on the **floor plane**: features on the floor are tracked in the (small, rotation-compensated) camera image and solved for metric translation using an **assumed camera height**: 1.3 m, or 0.9 m when **Phone held: sitting** is picked next to Deploy (remembered in this browser). After that the height follows the phone (crouching or lowering it to pet the pet moves the 3D camera down too) whenever the floor solve is trustworthy. Your hands are masked out of the floor tracking, so a reaching hand is not mistaken for the phone moving. When there is nothing to track, the position is held (the accelerometer is not integrated: it drifts metres within seconds).
 - **Video sync:** the camera image on screen is already 60–150 ms old (it varies by phone), while the gyro is current. The tracker measures that delay continuously by matching how far the image shifts against how far the gyro says the phone turned (`src/tracking/videoSync.ts`), and the 3D camera is rendered with the pose of the frame that is actually on screen (`getDisplayPose`), so the pet stays locked to the room when you turn instead of swimming ahead of it. The same measurement gives the odometry the right instant for each frame, which cuts the false drift turning causes. It also measures the lens field of view, which replaces the assumed ~65° once a few estimates agree it is more than 4% off (real phone video is often 5–10% off the guess, which made the pet swim on pans). In simulation (a phone looking around at a textured floor, 50–72° lenses, 70–140 ms camera delay) this cut the misalignment while turning from about 20–35 px to about 5 px on a phone screen, and the drift while turning in place by up to half.
 - The dog is placed on the floor plane (tap, as on Android), kept world-anchored, and you tap the floor to send it, long-press to re-place it.
 - Tip shown before Deploy and while scanning: hold the phone at chest height, point it at the floor and walk slowly.
@@ -58,7 +60,7 @@ iOS Safari has no WebXR, so **Deploy** on iOS runs our own tracker (`src/trackin
 Honest limits (nobody has verified this on a real iPhone yet):
 
 - **Needs "Motion & Orientation" access.** Safari asks when you tap Deploy; if refused the dog can't stay put (fixed camera). Fix: Settings > Apps > Safari > Advanced > Motion & Orientation Access (path from memory; Safari may remember a refusal, in which case change the setting and reload).
-- **Scale and drift:** there is no depth / LiDAR from the web, so scale comes from the camera-height assumption and the position drifts over time; best on **textured floors** and slow movement. Re-place the dog to recentre.
+- **Scale and drift:** there is no depth / LiDAR from the web, so scale comes from the camera-height assumption and the position drifts over time; best on **textured floors** and slow movement. Re-place the dog to recentre. The height that follows the phone (crouching) can't be told apart from a gyro tilt error, so it only moves when plenty of well-spread floor features agree, and it stays between 0.3 m and 1.5x the assumed height; it can still be slightly off or creep a little.
 - **No depth-refined hand mask** on iOS (capsule shape only).
 - **Voice:** needs **Dictation** on (Settings > General > Keyboard > Enable Dictation; Siri also needs to be on) and microphone access. Without it iOS reports `service-not-allowed` / `not-allowed` and the app says so. Audio goes to Apple's speech service.
 - The Deploy tap starts the motion prompt, then the camera prompt. The microphone is not asked in that tap on iPhone (stacked prompts can be auto-denied): tap 🎤 once in camera mode to enable voice.
@@ -72,7 +74,7 @@ Honest limits (nobody has verified this on a real iPhone yet):
 
 The **dog** and the **cat** share the same play modes; the buttons change to suit the animal.
 
-- **Your hand comes first.** Hold your hand out in front of the camera: the dog looks at it and trots over to sniff it, and follows it with its head (and body) as you move it slowly. Put your hand on its **head** (it closes its eyes and leans in) or its **back** (it wiggles and wags like mad) to **pet** it: hearts float up and the phone buzzes. Only your hand is needed, not your whole body.
+- **Your hand comes first.** Hold your hand out in front of the camera: the dog looks at it and trots over to sniff it, and follows it with its head (and body) as you move it slowly. Put your hand on its **head** (it closes its eyes and leans in) or its **back** (it wiggles and wags like mad) to **pet** it: hearts float up and the phone buzzes. Only your hand is needed, not your whole body. As soon as your hand is within about 25 cm of it the pet **stands still** so you never have to chase it, and moving the phone close to it never pushes it away. Without a depth sensor (iPhone) the hand's distance is only estimated from its size, so contact is forgiving along the line of sight.
 - **Hand in front of the dog**: when your hand is close to the camera the dog is hidden behind it, so your hand really looks in front of the dog.
 - **Moves on its own**: in **Follow** mode it stays near you and trots after you when you walk away; in **Free roam** it wanders and sniffs around nearby. The mode button switches between them.
 - **Tap the floor** to send it somewhere; it waits there.
@@ -90,9 +92,12 @@ The **dog** and the **cat** share the same play modes; the buttons change to sui
 
 Every phone brings its own pet to the party, and everyone sees everyone's pets.
 
-- On the start screen, tap **👥 Friends**: it opens a room and shows a **QR code**, the room code and a link (big enough to show on a projector from a laptop). Friends scan it with the phone camera, make their dog (a first-time guest starts with a random one, so the room isn't full of identical labradors) and **Deploy**. The button shows how many are in the room ("👥 3 here").
-- In AR / camera mode, friends' pets stand around yours with their name above them, doing exactly what they do on their owner's phone: walking, sitting, tricks, being petted.
-- **Pet a friend's pet** with your hand: it leans in here, on its owner's phone and on everyone else's, and the owner sees "💕 …'s human is petting …".
+- On the start screen, tap **👥 Friends** to open **Play together**. It shows which pet you'll bring, and two ways in:
+  - **Join a friend**: type the 4-letter room code from their screen (or paste their invite link) and tap **Join**.
+  - **Start a new room**: shows a **QR code**, the room code and a link with **Copy link** / **Share…** (big enough to show on a projector from a laptop). Friends scan it with the phone camera or type the code.
+  Then everyone makes their pet (a first-time guest who opens an invite link starts with a random dog, so the room isn't full of identical labradors) and taps **Deploy**. The sheet lists who is in the room and whether they're playing yet; **Leave room** goes back to Join / Start. The button shows how many are in the room ("👥 3 here").
+- In AR / camera mode, friends' pets stand beside yours (within reach) with their name above them, doing exactly what they do on their owner's phone: walking, sitting, tricks, being petted.
+- **Pet a friend's pet** with your hand: it leans in here, on its owner's phone and on everyone else's, and the owner sees "💕 …'s human is petting …". While your hand is near it, it stops wandering on your screen so it stays under your hand.
 - **Pets meet each other.** Now and then an idle pet (following or roaming) walks over to a friend's pet to say hi, and **🐾** sends yours right away (to the friend's pet it met least recently). The two walk up nose to nose, sniff, then each does a trick that suits the other: two dogs spin and jump, a dog and a cat jump and pounce, two cats stretch and groom. A pet that is sitting or lying stays put and the other one comes to it. Every phone shows the meeting from where the pets stand on that phone.
 - A feed under the hint says who joined or left, who is petting whom and which tricks friends asked for.
 - Up to 8 phones per room. A phone that loses the connection reconnects on its own (a 📡 chip says so); meanwhile friends' pets disappear and then come back.
@@ -237,7 +242,8 @@ It prints the address, e.g. `https://hw13-pets.<your-subdomain>.workers.dev`. Op
 | `src/main.ts` | Detects the device and picks WebXR, camera mode or the creator alone; switches the panel between the menu and the creator; shows the centered "Checking AR support…" screen until it knows |
 | `src/pets.ts` | The 3 pet slots (`petStore`): species list, create / delete / select, the active pet, saved in `localStorage` |
 | `src/menu.ts` | The "My pets" menu: slot cards, species picker, select / customise / delete with confirm |
-| `src/creator.ts` | The character creator panel for the active pet (dog or cat controls from shared building blocks), bound to `petStore` |
+| `src/creator.ts` | The character creator panel for the active pet (dog or cat controls from shared building blocks), bound to `petStore`; sticky name bar with section tabs |
+| `src/sheet.ts` | The start panel as a draggable bottom sheet on upright phones (grip / header / touch drags, three snap heights, remembered) |
 | `src/preview.ts` | The orbitable 3D preview of the active pet, rebuilt on every change and framed beside / above the panel |
 | `src/dog/types.ts` | The dog contracts: `DogConfig`, breed presets, `DogControls` (what the brain tells the model), `DogCharacter`, `DogBrain`, commands and modes |
 | `src/dog/config.ts` | Breed presets, defaults, the dice (`randomDogConfig`), and validation (saving lives in `src/pets.ts`) |
@@ -267,7 +273,7 @@ It prints the address, e.g. `https://hw13-pets.<your-subdomain>.workers.dev`. Op
 | `src/net/remotePet.ts` | A friend's pet on this phone: built from their pet card, posed from their states (smoothed), name tag and shadow |
 | `src/net/party.ts` | Multiplayer inside one AR / camera session: sends this pet, places friends' pets, petting them, pets meeting each other, the feed and 🐾 |
 | `src/net/kinds.ts` | The pet card this phone sends (its active dog or cat), building a friend's dog or cat from theirs, names, emoji, petting haptics |
-| `src/net/ui.ts`, `src/net/net.css` | The 👥 button, the invite sheet with the QR code, the feed chips, the 🐾 button |
+| `src/net/ui.ts`, `src/net/net.css` | The 👥 button, the Play together sheet (join by code / link, or start a room with QR code and roster), the feed chips, the 🐾 button |
 | `worker/index.ts` | The Cloudflare Worker: serves `dist/`, and a `Room` Durable Object per room code relays messages between its phones |
 | `wrangler.jsonc` | Cloudflare config: Worker name (`hw13-pets`), static files, the `Room` Durable Object |
 | `scripts/fake-friend.mjs` | A scripted friend (Mochi the corgi) for trying multiplayer without a second phone |

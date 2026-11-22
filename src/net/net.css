@@ -83,7 +83,7 @@
 
 .net-code {
   margin: 12px 0 2px;
-  font-size: 22px;
+  font-size: 30px;
   font-weight: 800;
   letter-spacing: 0.12em;
   color: var(--accent);
@@ -180,8 +180,141 @@
   color: var(--accent);
 }
 
-.net-leave {
+.net-room-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
   margin-top: 14px;
+}
+
+.net-empty {
+  margin: 8px 0 0;
+  text-align: left;
+}
+
+/* ---- Lobby: join with a code, or host ---- */
+.net-lobby {
+  text-align: left;
+}
+
+.net-bringing {
+  margin: 6px 0 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: var(--panel-2);
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.net-bringing strong {
+  color: var(--fg);
+}
+
+.net-bringing.net-warn {
+  color: var(--accent);
+}
+
+.net-join {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.net-join-label {
+  display: block;
+  margin: 0;
+}
+
+.net-join-row {
+  display: flex;
+  gap: 8px;
+}
+
+.net-code-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 52px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--field);
+  color: var(--fg);
+  font: 800 22px var(--font); /* ≥16px: no iOS zoom on focus */
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.net-code-input::placeholder {
+  font-weight: 500;
+  font-size: 16px;
+  letter-spacing: normal;
+  text-transform: none;
+  color: #8a8a8a;
+}
+
+.net-code-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.net-code-input[aria-invalid="true"] {
+  border-color: #ff6b6b;
+}
+
+.net-join-btn.btn {
+  flex: none;
+  min-width: 88px;
+  height: 52px;
+  padding: 0 20px;
+  border-radius: 12px;
+}
+
+.net-help {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.net-help.net-error {
+  color: #ff8a80;
+}
+
+.net-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.net-or::before,
+.net-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.net-host {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.net-host-btn.btn {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 12px;
+  background: var(--field);
+  border: 1px solid var(--line);
+}
+
+.net-host-btn.btn:hover {
+  background: var(--field-hover);
 }
 
 /* In AR: feed chips under the hint, and the say-hi button. */

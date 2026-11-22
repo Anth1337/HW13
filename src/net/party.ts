@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { contactTol, handZoneGap } from "../dog/contact";
 import { TRICK_LABEL, type DogCommand, type PetCharacter, type PetSocial, type PetZones, type TrickKind } from "../dog/types";
 import type { PerceivedHand, Perception } from "../vision/types";
 import { currentRoom } from "./index";
@@ -40,6 +41,8 @@ export interface PartyLink {
   alignable: boolean;
   /** The world origin moved (iOS tracker re-zeroed): the line-up no longer holds. */
   worldReset(): void;
+  /** Friends' pets shown right now (their models), written into `out` (cleared first). */
+  shownPets(out: PetCharacter[]): PetCharacter[];
   dispose(): void;
 }
 
@@ -52,6 +55,8 @@ export interface PartyHooks {
   social(s: PetSocial | null): void;
   /** This phone's pet is idle enough to go and say hi by itself. */
   sociable(): boolean;
+  /** Two pets shown here start meeting: `a` walks over to `b` (greeting sounds). */
+  meet?(a: PetCharacter, b: PetCharacter): void;
 }
 
 const SEND_EVERY_MS = 100;
@@ -61,23 +66,27 @@ const STALE_MS = 2500;
 const TELEPORT_M = 0.35;
 /** Hand on a friend's pet: same feel as the brain's petting (dwell before it counts, release after). */
 const TOUCH_DWELL_S = 0.2;
-const TOUCH_RELEASE_S = 0.5;
+/* Longer than the dwell: a hand tracked by apparent size flickers, and a dropout must not end a pet. */
+const TOUCH_RELEASE_S = 0.9;
+/* A touch still dwelling (not yet a pet) starts over after a gap this long, as the brain's PET_DROPOUT. */
+const TOUCH_DROPOUT_S = 0.5;
+/** A hand this close (m, gap to the pet's zones) holds the friend's pet still so it can be reached. */
+const HOLD_GAP = 0.25;
 const HAND_MAX_AGE = 0.4;
 const HAND_MIN_CONF = 0.3;
-const FINGERTIPS = [4, 8, 12, 16, 20];
 /** Being petted by a friend keeps this pet leaning in this long after their last event (they repeat every 250 ms). */
 const PETTED_HOLD_MS = 600;
 /** One "is petting" line per friend per this long, however often they stop and start. */
 const PETTED_FEED_MS = 4000;
-/** Where friends' pets stand: behind and beside this phone's pet (x right, z towards the viewer, m). */
+/** Where friends' pets stand: beside, and only slightly behind (within arm and step reach of), this phone's pet (x right, z towards the viewer, m). */
 const SLOTS: [number, number][] = [
-  [0.65, -1.0],
-  [-0.65, -1.0],
-  [0, -1.9],
-  [1.2, -1.8],
-  [-1.2, -1.8],
-  [0.65, -2.8],
-  [-0.65, -2.8],
+  [0.6, -0.3],
+  [-0.6, -0.3],
+  [0, -0.9],
+  [1.1, -0.7],
+  [-1.1, -0.7],
+  [0.55, -1.5],
+  [-0.55, -1.5],
 ];
 const SHOWN_COMMANDS: Partial<Record<DogCommand, string>> = { ...TRICK_LABEL, sit: "Sit", lie: "Lie down" };
 /** Line-up spots closer than this give a shaky heading (a 5 cm tap error is ~6° at 0.5 m). */
@@ -141,6 +150,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   let disposed = false;
   const zones: PetZones = { head: new THREE.Sphere(), body: new THREE.Sphere() };
   const point = new THREE.Vector3();
+  const scratch = new THREE.Vector3();
   const meets: Meet[] = [];
   const social: PetSocial = { stand: null, face: new THREE.Vector3(), look: new THREE.Vector3(), sniff: 0, status: "" };
   let socialOn = false;
@@ -247,6 +257,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   const busy = (id: string) => meets.some((m) => m.a === id || m.b === id);
   const speciesOf = (id: string) => (id === self() ? dog?.species : pets.get(id)?.model.species);
   const lengthOf = (id: string) => (id === self() ? dog?.length : pets.get(id)?.model.length) ?? 0.5;
+  const characterOf = (id: string) => (id === self() ? dog : pets.get(id)?.model) ?? null;
 
   /** Floor position of a pet as shown on this phone, or null if it isn't shown. */
   function whereIs(id: string, out: THREE.Vector3): THREE.Vector3 | null {
@@ -263,6 +274,8 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   /** Starts a meeting on this phone (both pets shown and free). True if it started. */
   function startMeet(a: string, b: string, stay: boolean, now: number): boolean {
     if (a === b || busy(a) || busy(b)) return false;
+    // A friend's pet under this phone's hand stays for the pet (it would walk out from under it).
+    if (pets.get(a)?.isHeld(now) || pets.get(b)?.isHeld(now)) return false;
     const pa = whereIs(a, new THREE.Vector3());
     const pb = whereIs(b, new THREE.Vector3());
     if (!pa || !pb) return false;
@@ -286,6 +299,9 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
     if (a === self()) lastMetMs.set(b, now);
     else if (b === self()) lastMetMs.set(a, now);
     feed(`🐾 ${nameOf(a)} is saying hi to ${nameOf(b)}`);
+    const ca = characterOf(a);
+    const cb = characterOf(b);
+    if (ca && cb) hooks.meet?.(ca, cb);
     return true;
   }
 
@@ -486,22 +502,6 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
         : `${roomName} · waiting for friends`,
   );
 
-  /** Is the palm or a fingertip of `h` inside `zone`? Writes the contact point. */
-  function handIn(zone: THREE.Sphere, h: PerceivedHand, out: THREE.Vector3): boolean {
-    if (zone.containsPoint(h.palm)) {
-      out.copy(h.palm);
-      return true;
-    }
-    for (const i of FINGERTIPS) {
-      const p = h.points[i];
-      if (p && zone.containsPoint(p)) {
-        out.copy(p);
-        return true;
-      }
-    }
-    return false;
-  }
-
   /** This phone's hands on friends' pets. */
   function petFriends(dt: number, now: number, hands: PerceivedHand[]) {
     for (const [id, pet] of pets) {
@@ -510,15 +510,28 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
         continue;
       }
       pet.zones(zones);
+      let t = touches.get(id);
+      // Depth-tolerant contact (see dog/contact.ts), with hysteresis: a running touch is harder to lose.
       let zone: "head" | "body" | null = null;
+      let holdGap = Infinity;
       for (const h of hands) {
         if (h.age > HAND_MAX_AGE || h.confidence < HAND_MIN_CONF) continue;
-        zone = handIn(zones.head, h, point) ? "head" : handIn(zones.body, h, point) ? "body" : null;
-        if (zone) break;
+        const gh = handZoneGap(zones.head, h, contactTol(h, t?.active ?? false), point);
+        if (gh <= 0) {
+          zone = "head";
+          break;
+        }
+        if (handZoneGap(zones.body, h, contactTol(h, t?.active ?? false), point) <= 0) {
+          zone = "body";
+          break;
+        }
+        // A near-but-not-touching hand freezes the pet (same measure as the own pet's hold).
+        const ha = contactTol(h, true);
+        holdGap = Math.min(holdGap, handZoneGap(zones.head, h, ha, scratch), handZoneGap(zones.body, h, ha, scratch));
       }
-      let t = touches.get(id);
+      if (zone || holdGap < HOLD_GAP) pet.hold(now);
       if (!zone) {
-        if (t && (t.idle += dt) >= TOUCH_RELEASE_S) touches.delete(id);
+        if (t && (t.idle += dt) >= (t.active ? TOUCH_RELEASE_S : TOUCH_DROPOUT_S)) touches.delete(id);
         continue;
       }
       if (!t) touches.set(id, (t = { zone, held: 0, idle: 0, active: false, sentMs: -Infinity }));
@@ -630,6 +643,12 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       ringsUntilMs = -Infinity;
       if (shared) setShared(null);
       if (was) feed("📍 Tracking restarted: tap 📍 to line up again");
+    },
+
+    shownPets(out) {
+      out.length = 0;
+      if (!disposed) for (const pet of pets.values()) if (pet.anchor.visible) out.push(pet.model);
+      return out;
     },
 
     dispose() {

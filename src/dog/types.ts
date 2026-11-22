@@ -247,8 +247,10 @@ export type DogCommand =
  *   2. The phone user's hand (the user's own hand in front of the camera): petting when a hand
  *      is in a zone; otherwise if a hand is near the dog (< ~0.6 m) or held out low in front of
  *      it, the dog looks at it, comes over to sniff it (unless in stay mode — then it only
- *      looks/leans), and follows a slowly moving hand with its head/body (lure).
- *      A hand very close to the camera (nearCamera) gets looked at too.
+ *      looks/leans), and follows a hand moving at a distance with its head/body (lure).
+ *      A hand right at the dog (within ~25 cm of a petting zone) makes it stand still so the
+ *      hand can land. A hand very close to the camera (nearCamera) is only looked at, unless
+ *      it is also near the dog's nose (phone held right above the dog).
  *   3. Explicit goTo target / "come".
  *   4. Mode behaviour (follow / free / stay).
  *   5. Eye contact with a face looking at the dog (one at a time, hysteresis) — head only,

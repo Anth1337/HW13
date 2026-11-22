@@ -23,11 +23,22 @@
  *    error in distance walked. Motion only along the viewing axis of a far floor is weak.
  *  - gyro yaw / pitch error, or a timing offset between gyro and video, appears as spurious
  *    translation; the significance gate inflates with angular speed to suppress it.
- *  - height (y) is observable but fragile (confounded with pitch error): it is only allowed to
- *    drift slowly and within +-30% of the assumed height.
- *  - hands / pets moving in view are non-rigid: RANSAC + landmark rejection handle them.
+ *  - height (y) is observable but fragile (confounded with pitch error). It follows the solver
+ *    (Y_GAIN per accepted step) only when the inlier set is large and well spread, else it creeps
+ *    (Y_GAIN_WEAK); bounded to [Y_MIN, Y_MAX_K * assumed height]. Following it matters: crouching
+ *    or lowering the phone to pet a floor-level pet is a real vertical move, and a stale height
+ *    both keeps the render camera too high and over-scales every landmark seeded afterwards
+ *    (seeding back-projects with the current height), so later walking reads ~h_assumed/h_real
+ *    too long. The initial height (this.h) is never changed: it is the scale reference.
+ *  - hands / pets moving in view are non-rigid: RANSAC + landmark rejection handle most of it,
+ *    but a big reaching hand near the image bottom is seeded as heavily weighted NEAR floor
+ *    landmarks and its motion reads as the camera moving. setExclusion() masks such regions
+ *    (the caller passes hand / pet boxes): no seeding there, and tracked landmarks inside do
+ *    not vote and are dropped.
  *  - no floor texture (polished concrete, plain carpet in dim light): reports few features.
  */
+
+import type { ExclusionRect } from "./types";
 
 export interface OdometryOptions {
   width: number;
@@ -77,6 +88,33 @@ const PX_SIGMA = 0.5;
 const TAU_IN = 1.6; // inlier threshold (px)
 const MAX_OMEGA = 1.5; // rad/s (~86 deg/s): above this a few ms of timing error is several degrees
 const GATE_K = 5; // cost reduction must exceed GATE_K * sigma_eff^2 (20 held ~1 cm/frame walking steps while turning: 30-40% of the distance lost)
+/**
+ * Fraction of the solved height change taken per accepted step with a trustworthy inlier set
+ * and a steady phone (see header). It has to be high: while the phone drops, landmarks leave the
+ * view and new ones are seeded with the CURRENT height, so a lagging height bakes its error into
+ * the map for good (0.15 kept ~60% of a 0.7 m crouch as a permanent 1.6x scale error in sims).
+ */
+const Y_GAIN = 1;
+/**
+ * Angular speed (rad/s) at which the height gain has tapered to Y_GAIN_WEAK: turning, gyro
+ * timing / pitch error leaks into y (a wandering height in the turn-in-place sim).
+ */
+const Y_OMEGA = 0.35;
+/** Gain with a small / clustered inlier set or a fast turn, where y is mostly pitch error. */
+const Y_GAIN_WEAK = 0.01;
+const Y_GAIN_MIN_INLIERS = 15;
+const Y_GAIN_MIN_SPREAD = 0.2;
+/** Height bounds: absolute floor (phone near the ground) and ceiling as a multiple of the assumed height. */
+const Y_MIN = 0.3;
+const Y_MAX_K = 1.5;
+/**
+ * Range floor of the per-landmark weight f / range. Very near floor points (0.3-0.6 m, usually
+ * right under the phone where the user's hand / the pet are) would otherwise get the largest
+ * vote while being the most likely to be non-floor.
+ */
+const RHO_MIN = 0.6;
+/** Most exclusion rectangles kept (setExclusion). */
+const MAX_EXCLUSIONS = 8;
 
 export class FloorOdometry {
   readonly width: number;
@@ -112,12 +150,19 @@ export class FloorOdometry {
   private readonly gxp: Float32Array; // LK guess
   private readonly gyp: Float32Array;
   private readonly okf: Uint8Array;
+  /** Landmark lies in an exclusion rect this frame (no vote). */
+  private readonly msk: Uint8Array;
+  /** Exclusion rects in pixels: x0, y0, x1, y1 per rect. */
+  private readonly excl = new Float32Array(MAX_EXCLUSIONS * 4);
+  private nExcl = 0;
 
   // solve scratch
   private readonly rr: Float64Array; // unit world rays, 3/lm
   private readonly rw: Float64Array; // sqrt weight
   private readonly inl: Uint8Array;
   private readonly idx: Int32Array;
+  /** Indices of the landmarks outside the exclusion rects (RANSAC samples). */
+  private readonly live: Int32Array;
   private rng = 123456789;
 
   // detection scratch
@@ -168,10 +213,12 @@ export class FloorOdometry {
     this.gxp = new Float32Array(m);
     this.gyp = new Float32Array(m);
     this.okf = new Uint8Array(m);
+    this.msk = new Uint8Array(m);
     this.rr = new Float64Array(m * 3);
     this.rw = new Float64Array(m);
     this.inl = new Uint8Array(m);
     this.idx = new Int32Array(m);
+    this.live = new Int32Array(m);
     const iz = (o.width + 1) * (o.height + 1);
     this.iXX = new Float64Array(iz);
     this.iXY = new Float64Array(iz);
@@ -200,6 +247,37 @@ export class FloorOdometry {
     this.havePrev = false;
     this.lastT = -1;
     this.h = y;
+  }
+
+  /**
+   * Regions of the image that are not floor (the user's hand, the pet), in normalised uv of the
+   * frame passed to process(). Replaces the previous set; stays until changed (pass [] to clear).
+   */
+  setExclusion(rects: readonly ExclusionRect[]): void {
+    let k = 0;
+    for (const r of rects) {
+      if (k >= MAX_EXCLUSIONS) break;
+      const x0 = Math.max(0, Math.min(r.u0, r.u1)) * this.width,
+        x1 = Math.min(1, Math.max(r.u0, r.u1)) * this.width,
+        y0 = Math.max(0, Math.min(r.v0, r.v1)) * this.height,
+        y1 = Math.min(1, Math.max(r.v0, r.v1)) * this.height;
+      if (!(x1 > x0 && y1 > y0)) continue; // empty, off-frame or NaN
+      this.excl[k * 4] = x0;
+      this.excl[k * 4 + 1] = y0;
+      this.excl[k * 4 + 2] = x1;
+      this.excl[k * 4 + 3] = y1;
+      k++;
+    }
+    this.nExcl = k;
+  }
+
+  private excluded(x: number, y: number): boolean {
+    const e = this.excl;
+    for (let k = 0; k < this.nExcl; k++) {
+      const o = k * 4;
+      if (x >= e[o] && x <= e[o + 2] && y >= e[o + 1] && y <= e[o + 3]) return true;
+    }
+    return false;
   }
 
   get position(): { x: number; y: number; z: number } {
@@ -474,10 +552,18 @@ export class FloorOdometry {
     const f = this.f;
     const X = this.X,
       rr = this.rr,
-      rw = this.rw;
+      rw = this.rw,
+      msk = this.msk;
     const px0 = this.px,
       py0 = this.py,
       pz0 = this.pz;
+    // Landmarks under a hand / the pet do not vote: zero weight (no pull in the least squares),
+    // never a RANSAC sample, never an inlier (so their bad count rises and they are dropped).
+    let nLive = 0;
+    for (let i = 0; i < n; i++) {
+      msk[i] = this.nExcl > 0 && this.excluded(this.fx[i], this.fy[i]) ? 1 : 0;
+      if (!msk[i]) this.live[nLive++] = i;
+    }
     for (let i = 0; i < n; i++) {
       const dx = (this.fx[i] - this.cx) / f,
         dy = -(this.fy[i] - this.cy) / f;
@@ -491,8 +577,8 @@ export class FloorOdometry {
       const ex = X[i * 3] - px0,
         ey = X[i * 3 + 1] - py0,
         ez = X[i * 3 + 2] - pz0;
-      const rho = Math.max(0.3, Math.hypot(ex, ey, ez));
-      rw[i] = f / rho; // sqrt of w
+      const rho = Math.max(RHO_MIN, Math.hypot(ex, ey, ez));
+      rw[i] = msk[i] ? 0 : f / rho; // sqrt of w
     }
     const maxStep = Math.min(1, MAX_SPEED * dt + 0.02);
 
@@ -511,14 +597,14 @@ export class FloorOdometry {
       bz = pz0;
     let bestCost = score(px0, py0, pz0) - 1e-6 * n; // slight preference for "no motion"
     const LAMBDA = 50;
-    for (let it = 0; it < 28; it++) {
+    for (let it = 0; it < 28 && nLive >= 2; it++) {
       this.rng = (Math.imul(this.rng, 1664525) + 1013904223) >>> 0;
-      const a = this.rng % n;
+      const a = this.rng % nLive;
       this.rng = (Math.imul(this.rng, 1664525) + 1013904223) >>> 0;
-      let b = this.rng % n;
-      if (a === b) b = (b + 1) % n;
-      this.idx[0] = a;
-      this.idx[1] = b;
+      let b = this.rng % nLive;
+      if (a === b) b = (b + 1) % nLive;
+      this.idx[0] = this.live[a];
+      this.idx[1] = this.live[b];
       if (!this.lsq(2, px0, py0, pz0, LAMBDA, null)) continue;
       const qx = this.sx,
         qy = this.sy,
@@ -541,7 +627,7 @@ export class FloorOdometry {
       cnt = 0;
       const thr = pass === 0 ? 2.2 * 2.2 : TAU_IN * TAU_IN;
       for (let i = 0; i < n; i++) {
-        if (this.resid(i, qx, qy, qz) < thr) this.idx[cnt++] = i;
+        if (!msk[i] && this.resid(i, qx, qy, qz) < thr) this.idx[cnt++] = i;
       }
       if (cnt < 6) break;
       if (!this.lsq(cnt, px0, py0, pz0, LAMBDA, null)) break;
@@ -553,7 +639,7 @@ export class FloorOdometry {
     let nin = 0;
     for (let i = 0; i < n; i++) {
       const e = this.resid(i, qx, qy, qz);
-      if (e < TAU_IN * TAU_IN * 1.5) {
+      if (!msk[i] && e < TAU_IN * TAU_IN * 1.5) {
         this.inl[i] = 1;
         nin++;
       } else this.inl[i] = 0;
@@ -582,7 +668,7 @@ export class FloorOdometry {
       vy = Math.max(0, syy / nn - (sy / nn) ** 2);
     const spread = Math.min(1, Math.sqrt(vx + vy) / (0.22 * Math.max(this.width, this.height)));
     res.spread = spread;
-    const ratio = nin / n;
+    const ratio = nin / Math.max(1, nLive);
     res.quality = Math.min(1, nin / 25) * (0.5 + 0.5 * spread) * Math.sqrt(ratio);
 
     if (nin >= 8 && spread > 0.12) {
@@ -597,8 +683,14 @@ export class FloorOdometry {
       if (significant) {
         const step = Math.hypot(qx - px0, qy - py0, qz - pz0);
         if (step <= maxStep) {
-          // height: slow and bounded (confounded with pitch error)
-          const ny = Math.min(this.h * 1.3, Math.max(this.h * 0.7, py0 + 0.01 * (qy - py0)));
+          // height: follows the solve only with a large, well-spread inlier set (confounded with
+          // pitch error otherwise), bounded (see header)
+          const steady = Math.max(0, 1 - omega / Y_OMEGA);
+          const gain =
+            nin >= Y_GAIN_MIN_INLIERS && spread > Y_GAIN_MIN_SPREAD
+              ? Y_GAIN_WEAK + (Y_GAIN - Y_GAIN_WEAK) * steady
+              : Y_GAIN_WEAK;
+          const ny = Math.min(this.h * Y_MAX_K, Math.max(Y_MIN, py0 + gain * (qy - py0)));
           this.px = qx;
           this.pz = qz;
           this.py = ny;
@@ -751,6 +843,7 @@ export class FloorOdometry {
             for (let x = x0; x < x1; x += 2) {
               const sinE = this.sinElev(R, x, y);
               if (sinE < SIN_E_MIN || this.py / sinE > RANGE_MAX) continue;
+              if (this.nExcl > 0 && this.excluded(x, y)) continue; // hand / pet: not floor
               // window sums via integral images (rows offset by rowBase)
               const ia = (y - half - rowBase) * W1 + (x - half),
                 ib = ia + 5,

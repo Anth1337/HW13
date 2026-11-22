@@ -138,6 +138,18 @@ export interface PerceivedHand {
   personId: number | null;
   /** Image-space (u, v 0..1) palm centre of this detection — used by people.ts for association. */
   uv: UV;
+  /**
+   * World-space camera position of the frame this hand was detected in. Depth error lies along
+   * the ray from here through the hand, which is what the depth-tolerant contact test
+   * (src/dog/contact.ts) needs.
+   */
+  origin: THREE.Vector3;
+  /**
+   * True when the depth came from a depth sensor (cam.depthAt, WebXR): accurate, so contact is
+   * tested strictly. False = depth from apparent hand size only (iOS / camera mode): error of
+   * several cm along the camera ray.
+   */
+  depthMeasured: boolean;
 }
 
 /** A face in world space (someone who might be looking at the dog). */

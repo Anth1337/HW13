@@ -20,7 +20,7 @@ export type ARUI = PlayUI & {
   /** #vision-canvas — from PlayUI. */
   /** #ar-controls — everything tappable; beforexrselect is prevented on it. */
   controls: HTMLElement;
-  /** #cmd-sit, #cmd-lie, #cmd-come, #cmd-mode, #trick-rollOver, #trick-jump, #trick-spin, #btn-vision, #btn-voice, #voice-chip, #voice-hint — from PlayUI. */
+  /** #cmd-sit, #cmd-lie, #cmd-come, #cmd-mode, #trick-rollOver, #trick-jump, #trick-spin, #btn-vision, #btn-voice, #voice-chip, #voice-hint, #btn-sound — from PlayUI. */
   /** #btn-exit */
   exit: HTMLButtonElement;
 };
@@ -49,6 +49,7 @@ export function arUIFromDOM(): ARUI {
     voiceToggle: get<HTMLButtonElement>("btn-voice"),
     voiceChip: get("voice-chip"),
     voiceHint: get("voice-hint"),
+    soundToggle: get<HTMLButtonElement>("btn-sound"),
     exit: get<HTMLButtonElement>("btn-exit"),
   };
 }
@@ -194,6 +195,7 @@ export async function startARSession(renderer: THREE.WebGLRenderer, ui: ARUI, on
   const touchHits = new Map<XRInputSource, THREE.Vector3>();
   const viewer = { position: new THREE.Vector3(), forward: new THREE.Vector3(0, 0, -1) };
   const viewerQuat = new THREE.Quaternion();
+  const ear = { position: viewer.position, quaternion: viewerQuat };
   const reticlePos = new THREE.Vector3();
   const rayO = new THREE.Vector3();
   const rayD = new THREE.Vector3();
@@ -378,7 +380,7 @@ export async function startARSession(renderer: THREE.WebGLRenderer, ui: ARUI, on
     }
 
     play.handOcclusion = !gpuDepthOcclusionActive(renderer);
-    play.update(dt, viewer); // brain, then dog.update(t)
+    play.update(dt, viewer, ear); // brain, then dog.update(t); ear: the pets' sounds
     if (dog) fitShadow();
 
     if (marker.visible) {

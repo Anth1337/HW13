@@ -19,6 +19,7 @@ import {
   requestMotionPermission,
 } from "./tracking";
 import type {
+  ExclusionRect,
   MotionPermission,
   TrackedPose,
   WorldTracker,
@@ -89,6 +90,18 @@ const OFF_FLOOR_HINT = (name: string) =>
 const NO_SENSORS_HINT =
   "Motion sensors unavailable — the dog stays in front of the camera";
 const HOLD_STEPS = 32;
+/**
+ * Floor-odometry exclusion (non-floor image regions). Hand boxes grow by this fraction of their
+ * size per side: the box is from the latest detection (up to HAND_BOX_AGE old in dogPlay) and
+ * the hand keeps moving, and the wrist / forearm extend past the landmarks.
+ */
+const HAND_MASK_GROW = 0.35;
+/**
+ * Most of the frame the mask may cover (sum of box areas): beyond it the hand growth goes, then
+ * the mask entirely, so a close hand never starves the odometry of all features (it would report
+ * "limited" mid-petting).
+ */
+const MAX_MASK_FRACTION = 0.5;
 
 /** True when this browser can open a camera from a web page (needs HTTPS). */
 export function isCameraModeSupported(): boolean {
@@ -267,6 +280,7 @@ export async function startCameraMode(
       forward: new THREE.Vector3(0, 0, -1),
     };
     const flatForward = new THREE.Vector3();
+    const ear = { position: camera.position, quaternion: camera.quaternion };
     const pose: TrackedPose = {
       position: new THREE.Vector3(),
       quaternion: new THREE.Quaternion(),
@@ -410,6 +424,43 @@ export async function startCameraMode(
       marker.visible = true;
     }
 
+    /** Grows a uv box by `k` of its size per side, clipped to the frame. */
+    function grown(b: ExclusionRect, k: number): ExclusionRect {
+      const du = (b.u1 - b.u0) * k;
+      const dv = (b.v1 - b.v0) * k;
+      return {
+        u0: Math.max(0, b.u0 - du),
+        v0: Math.max(0, b.v0 - dv),
+        u1: Math.min(1, b.u1 + du),
+        v1: Math.min(1, b.v1 + dv),
+      };
+    }
+
+    const maskArea = (rects: ExclusionRect[]) =>
+      rects.reduce(
+        (a, r) => a + Math.max(0, r.u1 - r.u0) * Math.max(0, r.v1 - r.v0),
+        0,
+      );
+
+    /**
+     * Tells the floor odometry which parts of the next frame are not floor: the user's hands
+     * (latest detection). A reaching hand near the bottom of the image is otherwise seeded as
+     * heavily weighted near-floor features, its motion reads as the camera moving and the
+     * world-anchored pet slides away under the hand. (The pet itself is rendered, not in the
+     * video the odometry reads, so its screen area is real floor and stays unmasked.)
+     */
+    function updateExclusion() {
+      if (!tracker) return;
+      const hands = play.handBoxes();
+      const tiers: ExclusionRect[][] = [
+        hands.map((b) => grown(b, HAND_MASK_GROW)),
+        hands.map((b) => grown(b, 0)),
+      ];
+      tracker.setExclusion(
+        tiers.find((r) => maskArea(r) <= MAX_MASK_FRACTION) ?? [],
+      );
+    }
+
     /**
      * Reads the pose source into the three.js camera. Tracked: the pose of the video frame on
      * screen (getDisplayPose), so the dog stays locked to the image instead of leading it on
@@ -417,6 +468,7 @@ export async function startCameraMode(
      */
     function updateCameraPose(time: number): boolean {
       if (!tracked || !tracker) return true;
+      updateExclusion();
       tracker.processFrame(video, time);
       if (Math.abs(tracker.fovLongSideDeg - layoutFov) > 0.5) layout(); // measured FOV changed
       tracker.getDisplayPose(pose);
@@ -633,7 +685,7 @@ export async function startCameraMode(
           .addScaledVector(flatForward, ahead);
       }
 
-      play.update(dt, viewer); // brain, then dog.update(t)
+      play.update(dt, viewer, ear); // brain, then dog.update(t); ear (the camera itself): the pets' sounds
       if (dog) fitShadow();
 
       if (marker.visible) {
