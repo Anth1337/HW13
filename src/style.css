@@ -134,8 +134,87 @@ body {
 .home.checking .creator,
 .home.checking .menu,
 .home.checking .cr-back,
-.home.checking .home-actions {
+.home.checking .home-actions,
+.home.checking .sheet-grip {
   display: none;
+}
+
+/* ---- Draggable bottom sheet (src/sheet.ts; phones held upright) ---- */
+.sheet-grip {
+  display: none;
+}
+
+.home.sheet-on {
+  max-height: none; /* sheet.ts sets the height */
+}
+
+.home.sheet-on.sheet-animate {
+  transition: height 0.32s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+
+.home.sheet-on .sheet-grip {
+  appearance: none;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 16px 16px 0 0;
+  background: none;
+  cursor: grab;
+  touch-action: none;
+}
+
+.home.sheet-on .sheet-grip:focus-visible {
+  outline-offset: -4px;
+}
+
+.sheet-grip-bar {
+  width: 44px;
+  height: 5px;
+  border-radius: 3px;
+  background: #5a5a5a;
+  transition: background 0.15s, width 0.15s;
+}
+
+.home.sheet-on .sheet-grip:hover .sheet-grip-bar,
+.home.sheet-dragging .sheet-grip-bar {
+  width: 56px;
+  background: var(--muted);
+}
+
+.home.sheet-on .home-head {
+  padding-top: 0;
+  touch-action: none; /* dragging the header resizes the sheet */
+  cursor: grab;
+}
+
+.home.sheet-dragging,
+.home.sheet-dragging * {
+  cursor: grabbing !important;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Below full height, vertical touch drags on the content move the sheet instead of scrolling. */
+.home.sheet-locked .creator,
+.home.sheet-locked .menu {
+  touch-action: pan-x;
+}
+
+.home.sheet-dragging .creator,
+.home.sheet-dragging .menu {
+  overflow-y: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .home.sheet-on.sheet-animate {
+    transition-duration: 0.01s;
+  }
 }
 
 .creator,
@@ -345,14 +424,61 @@ body {
 }
 
 .cr-top {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  padding: 4px 0 8px;
+}
+
+/* Section tabs: stuck to the top of the scrolling creator. */
+.cr-nav {
   position: sticky;
   top: 0;
   z-index: 1;
   display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  padding: 4px 0 10px;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  margin: 0 -16px;
+  padding: 4px 16px 6px;
   background: var(--panel);
+  box-shadow: 0 6px 8px -8px rgba(0, 0, 0, 0.6);
+}
+
+.cr-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.cr-tab {
+  appearance: none;
+  flex: none;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  font: 600 13px var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cr-tab:hover {
+  color: var(--fg);
+  background: var(--field);
+}
+
+.cr-tab[aria-current="true"] {
+  color: var(--accent);
+  border-color: rgba(255, 160, 51, 0.55);
+  background: rgba(255, 160, 51, 0.1);
+}
+
+/* Sliders side by side when there's room (two ~150px columns fit a 360px phone). */
+.cr-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px 16px;
 }
 
 .cr-name-wrap {

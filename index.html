@@ -15,8 +15,12 @@
     <!-- Start screen (bottom sheet on phones, side panel on wide screens) over the 3D preview:
          the "My pets" slot menu (src/menu.ts) or the character creator for the active pet
          (src/creator.ts), and the Deploy button. Starts in the centered "checking" state
-         until main.ts knows which AR path to use. -->
+         until main.ts knows which AR path to use. On phones held upright the sheet can be
+         dragged taller or shorter by the grip, the header or (touch) the content: src/sheet.ts. -->
     <div id="home" class="home checking">
+      <button id="sheet-grip" type="button" class="sheet-grip" aria-controls="home" aria-expanded="false" aria-label="Resize panel">
+        <span class="sheet-grip-bar" aria-hidden="true"></span>
+      </button>
       <header class="home-head">
         <h1>AR Pets</h1>
         <p id="home-text" class="home-text" role="status">Checking AR support…</p>

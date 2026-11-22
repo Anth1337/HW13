@@ -67,6 +67,13 @@ export function leaveRoom(): void {
   emit();
 }
 
+/** A first-time guest (no saved pets) gets a random dog in slot 1, so a room isn't full of identical default labradors. */
+export function ensureGuestPet(): void {
+  if (petStore.slots().some((p) => p)) return;
+  petStore.create(0, "dog");
+  petStore.updateActive(randomDogConfig());
+}
+
 /**
  * Joins ?room=… if the page was opened from an invite, and keeps the room's copy of this pet up to
  * date. A first-time guest (no saved pets) gets a random dog in slot 1 so a room isn't full of
@@ -75,10 +82,7 @@ export function leaveRoom(): void {
 export function initNet(): void {
   const code = roomCodeFromURL();
   if (code) {
-    if (!petStore.slots().some((p) => p)) {
-      petStore.create(0, "dog");
-      petStore.updateActive(randomDogConfig());
-    }
+    ensureGuestPet();
     joinRoom(code);
   }
   let timer: ReturnType<typeof setTimeout> | undefined;

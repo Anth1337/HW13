@@ -7,6 +7,7 @@ import { mountCreator } from "./creator";
 import { mountMenu } from "./menu";
 import { petName, petStore } from "./pets";
 import { createPreview } from "./preview";
+import { mountSheet } from "./sheet";
 import { initNet } from "./net";
 import { mountRoomUI } from "./net/ui";
 import { arUIFromDOM, isWebXRARSupported, startARSession, type ARUI } from "./webxr";
@@ -46,6 +47,7 @@ function showCreator() {
   creatorEl.hidden = backButton.hidden = false;
   creatorEl.scrollTop = 0;
   creator = mountCreator(creatorEl);
+  if (sheet.current() === "peek") sheet.snapTo("half"); // show some settings, not just the name
   backButton.focus();
 }
 backButton.addEventListener("click", () => {
@@ -54,6 +56,7 @@ backButton.addEventListener("click", () => {
 });
 mountMenu(menuEl, showCreator);
 mountRoomUI($("home-actions"));
+const sheet = mountSheet(home, $<HTMLButtonElement>("sheet-grip"), [menuEl, creatorEl]);
 
 /** Set once the AR path is known: whether this device has a Deploy button at all. */
 let canDeploy = false;
