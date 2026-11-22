@@ -1,0 +1,356 @@
+{
+  "dog-bark-small-1": {
+    "file": "dog-bark-small-1.m4a",
+    "category": "dog.bark.small",
+    "duration": 0.406,
+    "loop": false,
+    "pitchHz": 774
+  },
+  "dog-bark-small-2": {
+    "file": "dog-bark-small-2.m4a",
+    "category": "dog.bark.small",
+    "duration": 0.516,
+    "loop": false
+  },
+  "dog-bark-small-3": {
+    "file": "dog-bark-small-3.m4a",
+    "category": "dog.bark.small",
+    "duration": 0.37,
+    "loop": false
+  },
+  "dog-bark-small-4": {
+    "file": "dog-bark-small-4.m4a",
+    "category": "dog.bark.small",
+    "duration": 0.165,
+    "loop": false,
+    "pitchHz": 938
+  },
+  "dog-bark-medium-1": {
+    "file": "dog-bark-medium-1.m4a",
+    "category": "dog.bark.medium",
+    "duration": 0.346,
+    "loop": false,
+    "pitchHz": 735
+  },
+  "dog-bark-medium-2": {
+    "file": "dog-bark-medium-2.m4a",
+    "category": "dog.bark.medium",
+    "duration": 0.22,
+    "loop": false,
+    "pitchHz": 538
+  },
+  "dog-bark-medium-3": {
+    "file": "dog-bark-medium-3.m4a",
+    "category": "dog.bark.medium",
+    "duration": 0.326,
+    "loop": false,
+    "pitchHz": 621
+  },
+  "dog-bark-medium-4": {
+    "file": "dog-bark-medium-4.m4a",
+    "category": "dog.bark.medium",
+    "duration": 0.341,
+    "loop": false,
+    "pitchHz": 760
+  },
+  "dog-bark-big-1": {
+    "file": "dog-bark-big-1.m4a",
+    "category": "dog.bark.big",
+    "duration": 0.581,
+    "loop": false,
+    "pitchHz": 441
+  },
+  "dog-bark-big-2": {
+    "file": "dog-bark-big-2.m4a",
+    "category": "dog.bark.big",
+    "duration": 0.566,
+    "loop": false,
+    "pitchHz": 405
+  },
+  "dog-bark-big-3": {
+    "file": "dog-bark-big-3.m4a",
+    "category": "dog.bark.big",
+    "duration": 0.325,
+    "loop": false,
+    "pitchHz": 209
+  },
+  "dog-bark-big-4": {
+    "file": "dog-bark-big-4.m4a",
+    "category": "dog.bark.big",
+    "duration": 0.411,
+    "loop": false,
+    "pitchHz": 424
+  },
+  "dog-bark-big-5": {
+    "file": "dog-bark-big-5.m4a",
+    "category": "dog.bark.big",
+    "duration": 0.561,
+    "loop": false,
+    "pitchHz": 364
+  },
+  "dog-barks-small-1": {
+    "file": "dog-barks-small-1.m4a",
+    "category": "dog.barks.small",
+    "duration": 1.243,
+    "loop": false,
+    "pitchHz": 848
+  },
+  "dog-barks-medium-1": {
+    "file": "dog-barks-medium-1.m4a",
+    "category": "dog.barks.medium",
+    "duration": 0.92,
+    "loop": false,
+    "pitchHz": 802
+  },
+  "dog-barks-big-1": {
+    "file": "dog-barks-big-1.m4a",
+    "category": "dog.barks.big",
+    "duration": 1.037,
+    "loop": false,
+    "pitchHz": 387
+  },
+  "dog-whine-1": {
+    "file": "dog-whine-1.m4a",
+    "category": "dog.whine",
+    "duration": 1.042,
+    "loop": false,
+    "pitchHz": 604
+  },
+  "dog-whine-2": {
+    "file": "dog-whine-2.m4a",
+    "category": "dog.whine",
+    "duration": 0.837,
+    "loop": false,
+    "pitchHz": 580
+  },
+  "dog-whine-3": {
+    "file": "dog-whine-3.m4a",
+    "category": "dog.whine",
+    "duration": 0.747,
+    "loop": false,
+    "pitchHz": 513
+  },
+  "dog-whine-4": {
+    "file": "dog-whine-4.m4a",
+    "category": "dog.whine",
+    "duration": 1.955,
+    "loop": false,
+    "pitchHz": 538
+  },
+  "dog-whine-greet-1": {
+    "file": "dog-whine-greet-1.m4a",
+    "category": "dog.whine.greet",
+    "duration": 2.025,
+    "loop": false,
+    "pitchHz": 723
+  },
+  "dog-pant-1": {
+    "file": "dog-pant-1.m4a",
+    "category": "dog.pant",
+    "duration": 2.71,
+    "loop": true,
+    "loopStart": 0.1,
+    "loopEnd": 2.61
+  },
+  "dog-pant-2": {
+    "file": "dog-pant-2.m4a",
+    "category": "dog.pant",
+    "duration": 2.335,
+    "loop": true,
+    "loopStart": 0.1,
+    "loopEnd": 2.235
+  },
+  "dog-sniff-1": {
+    "file": "dog-sniff-1.m4a",
+    "category": "dog.sniff",
+    "duration": 1.675,
+    "loop": false
+  },
+  "dog-sniff-2": {
+    "file": "dog-sniff-2.m4a",
+    "category": "dog.sniff",
+    "duration": 1.684,
+    "loop": false
+  },
+  "dog-growl-1": {
+    "file": "dog-growl-1.m4a",
+    "category": "dog.growl",
+    "duration": 1.102,
+    "loop": false
+  },
+  "dog-growl-2": {
+    "file": "dog-growl-2.m4a",
+    "category": "dog.growl",
+    "duration": 1.345,
+    "loop": false,
+    "pitchHz": 159
+  },
+  "dog-growl-3": {
+    "file": "dog-growl-3.m4a",
+    "category": "dog.growl",
+    "duration": 0.857,
+    "loop": false,
+    "pitchHz": 203
+  },
+  "dog-howl-1": {
+    "file": "dog-howl-1.m4a",
+    "category": "dog.howl",
+    "duration": 3.097,
+    "loop": false,
+    "pitchHz": 428
+  },
+  "dog-howl-2": {
+    "file": "dog-howl-2.m4a",
+    "category": "dog.howl",
+    "duration": 2.821,
+    "loop": false,
+    "pitchHz": 342
+  },
+  "dog-groan-1": {
+    "file": "dog-groan-1.m4a",
+    "category": "dog.sigh",
+    "duration": 1.338,
+    "loop": false,
+    "pitchHz": 148
+  },
+  "dog-groan-2": {
+    "file": "dog-groan-2.m4a",
+    "category": "dog.sigh",
+    "duration": 0.551,
+    "loop": false,
+    "pitchHz": 193
+  },
+  "dog-huff-1": {
+    "file": "dog-huff-1.m4a",
+    "category": "dog.huff",
+    "duration": 0.346,
+    "loop": false
+  },
+  "dog-yawn-1": {
+    "file": "dog-yawn-1.m4a",
+    "category": "dog.yawn",
+    "duration": 1.4,
+    "loop": false,
+    "pitchHz": 544
+  },
+  "cat-meow-short-1": {
+    "file": "cat-meow-short-1.m4a",
+    "category": "cat.meow.short",
+    "duration": 0.21,
+    "loop": false,
+    "pitchHz": 900
+  },
+  "cat-meow-short-2": {
+    "file": "cat-meow-short-2.m4a",
+    "category": "cat.meow.short",
+    "duration": 0.556,
+    "loop": false,
+    "pitchHz": 1161
+  },
+  "cat-meow-1": {
+    "file": "cat-meow-1.m4a",
+    "category": "cat.meow",
+    "duration": 1.023,
+    "loop": false,
+    "pitchHz": 604
+  },
+  "cat-meow-2": {
+    "file": "cat-meow-2.m4a",
+    "category": "cat.meow",
+    "duration": 0.802,
+    "loop": false,
+    "pitchHz": 919
+  },
+  "cat-meow-3": {
+    "file": "cat-meow-3.m4a",
+    "category": "cat.meow",
+    "duration": 0.621,
+    "loop": false,
+    "pitchHz": 658
+  },
+  "cat-meow-4": {
+    "file": "cat-meow-4.m4a",
+    "category": "cat.meow",
+    "duration": 0.822,
+    "loop": false,
+    "pitchHz": 658
+  },
+  "cat-meow-5": {
+    "file": "cat-meow-5.m4a",
+    "category": "cat.meow",
+    "duration": 0.852,
+    "loop": false,
+    "pitchHz": 678
+  },
+  "cat-meow-question-1": {
+    "file": "cat-meow-question-1.m4a",
+    "category": "cat.meow.question",
+    "duration": 0.727,
+    "loop": false,
+    "pitchHz": 432
+  },
+  "cat-meow-question-2": {
+    "file": "cat-meow-question-2.m4a",
+    "category": "cat.meow.question",
+    "duration": 0.907,
+    "loop": false,
+    "pitchHz": 649
+  },
+  "cat-meow-long-1": {
+    "file": "cat-meow-long-1.m4a",
+    "category": "cat.meow.long",
+    "duration": 2.776,
+    "loop": false,
+    "pitchHz": 544
+  },
+  "cat-meow-long-2": {
+    "file": "cat-meow-long-2.m4a",
+    "category": "cat.meow.long",
+    "duration": 0.862,
+    "loop": false,
+    "pitchHz": 596
+  },
+  "cat-trill-1": {
+    "file": "cat-trill-1.m4a",
+    "category": "cat.trill",
+    "duration": 0.842,
+    "loop": false,
+    "pitchHz": 621
+  },
+  "cat-trill-2": {
+    "file": "cat-trill-2.m4a",
+    "category": "cat.trill",
+    "duration": 0.722,
+    "loop": false,
+    "pitchHz": 490
+  },
+  "cat-trill-3": {
+    "file": "cat-trill-3.m4a",
+    "category": "cat.trill",
+    "duration": 0.832,
+    "loop": false,
+    "pitchHz": 519
+  },
+  "cat-chatter-1": {
+    "file": "cat-chatter-1.m4a",
+    "category": "cat.chatter",
+    "duration": 1.185,
+    "loop": false
+  },
+  "cat-purr-1": {
+    "file": "cat-purr-1.m4a",
+    "category": "cat.purr",
+    "duration": 3.475,
+    "loop": true,
+    "loopStart": 0.1,
+    "loopEnd": 3.375
+  },
+  "cat-purr-2": {
+    "file": "cat-purr-2.m4a",
+    "category": "cat.purr",
+    "duration": 2.5,
+    "loop": true,
+    "loopStart": 0.1,
+    "loopEnd": 2.4
+  }
+}

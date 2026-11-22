@@ -12,13 +12,16 @@
  *   another app taking the audio session) or after a resume that was refused.
  * - At most MAX_SHOTS one-shot sounds at once across all pets (claimShot / releaseShot): a party of
  *   pets never turns into a wall of noise, and old phones never run out of audio threads.
+ * - The first prime also starts loading the recorded pet sounds (samples.ts).
  * - Mute is remembered in localStorage (try/catch'd: private mode just doesn't remember).
  */
+
+import { loadSamples } from "./samples";
 
 type WebkitWindow = Window & { webkitAudioContext?: typeof AudioContext };
 
 const MUTE_KEY = "ar-pet-sound-muted";
-/** Master level: the synthesized voices peak near 1, several can overlap. */
+/** Master level: the clips peak near 0.9 (loudness-matched, see vocals.ts LEVEL), several can overlap. */
 const MASTER_LEVEL = 0.8;
 const MAX_SHOTS = 6;
 
@@ -76,6 +79,7 @@ export function primeAudio(): void {
   const ac = audioContext();
   if (!ac) return;
   resume();
+  loadSamples(ac); // the recorded pet sounds (once; decoded in the background)
   try {
     // iOS unlocks Web Audio for the page only after a sound starts inside a gesture: one silent sample.
     const src = ac.createBufferSource();

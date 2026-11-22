@@ -1,8 +1,10 @@
 import { onMuteChange, primeAudio, setSoundMuted, soundMuted } from "./engine";
 
 /*
- * Pet sound effects: engine.ts (the shared AudioContext, unlock, mute, duck), synth.ts (procedural
- * barks / meows / purrs …) and petSounds.ts (per-pet "sound brains" that decide when to speak).
+ * Pet sound effects: engine.ts (the shared AudioContext, unlock, mute, duck), samples.ts (the
+ * recorded dog / cat sounds in public/sounds/, loaded once), vocals.ts (which clip a pet plays, and
+ * how pitched), synth.ts (procedural fallbacks and the few sounds without a recording), shot.ts
+ * (one sound's nodes) and petSounds.ts (per-pet "sound brains" that decide when to speak).
  */
 
 export { primeAudio, soundMuted, setSoundMuted } from "./engine";
