@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { bindSoundButton, createPetSounds, type Ear } from "./audio";
 import { createPetBrain } from "./dog/brain";
 import { createPetFx } from "./dog/fx";
 import { TRICK_LABEL, type DogBrain, type DogCommand, type DogMode, type PetCharacter, type TrickKind } from "./dog/types";
@@ -16,7 +17,8 @@ import { createPartyLink } from "./net/party";
  * Everything the two "play with the pet" modes share (WebXR AR in webxr.ts and the camera
  * fallback in cameraMode.ts): the cached hand/face detector, the single pet's brain, the hand
  * occluder, petting hearts + haptics, the command / trick / vision buttons, the status chip,
- * the "Show vision" debug drawing and, when the page is in a room, friends' pets (net/party.ts).
+ * the "Show vision" debug drawing, the pets' sound effects (src/audio: this pet and every friend's
+ * pet shown here) and, when the page is in a room, friends' pets (net/party.ts).
  *
  * Per rendered frame a mode calls, in this order:
  *   if (play.wantsFrame(timeMs)) play.see(image, timeMs, cam)   // fresh camera image only
@@ -42,6 +44,8 @@ export type PlayUI = {
   voiceChip: HTMLElement;
   /** #voice-hint: one-line "Say: …" hint, shown briefly the first time. */
   voiceHint: HTMLElement;
+  /** 🔊 / 🔇 pet sounds toggle (#btn-sound). */
+  soundToggle?: HTMLButtonElement;
 };
 
 /** Maps camera-image uv (v down, 0..1) to overlay CSS pixels of a width × height box. */
@@ -172,8 +176,11 @@ export interface DogPlay {
   wantsFrame(timeMs: number): boolean;
   /** Feed a fresh camera image and the camera model for exactly that frame. */
   see(image: ImageData | HTMLVideoElement | HTMLCanvasElement, timeMs: number, cam: CameraModel): void;
-  /** Once per rendered frame: brain, then dog pose, then occluder / hearts / UI. */
-  update(dt: number, viewer: Viewer): void;
+  /**
+   * Once per rendered frame: brain, then dog pose, then occluder / hearts / sounds / UI.
+   * `ear` = the camera pose for spatial sound (defaults to `viewer`, which camera mode may move ahead of the camera).
+   */
+  update(dt: number, viewer: Viewer, ear?: Ear): void;
   /** Hand occlusion mesh on/off (off when the GPU depth buffer already occludes). Default on. */
   handOcclusion: boolean;
   /** A mode-specific message for the status chip (null clears it). */
@@ -231,6 +238,14 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
   let firedMs = -Infinity;
   let utteranceOpen = false;
   let extendTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Last speech result (interim or final): pets hold their chatter while someone is talking. */
+  let lastSpeechMs = -Infinity;
+
+  // Sound: one voice per pet shown (this one + friends'), spatialised at the camera.
+  const sounds = createPetSounds();
+  const shownPets: PetCharacter[] = [];
+  const fallbackEar: Ear = { position: new THREE.Vector3(), quaternion: new THREE.Quaternion() };
+  const AHEAD = new THREE.Vector3(0, 0, -1);
 
   const party = createPartyLink(scene, {
     burst: (point, zone) => fx.burst(point, zone),
@@ -242,10 +257,12 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
         cmd = labels.tricks[i];
       }
       brain.command(cmd);
+      sounds.commanded(cmd);
       syncButtons();
     },
     social: (s) => brain?.social(s),
     sociable: () => !!brain?.sociable,
+    meet: (a, b) => sounds.meet(a, b),
   });
 
   const commandButtons: { button: HTMLButtonElement; cmd: () => DogCommand }[] = [
@@ -377,6 +394,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       return;
     }
     brain.command(command, speaker);
+    sounds.commanded(command);
     party?.commanded(command);
     firedCmd = command;
     firedMs = nowMs;
@@ -392,6 +410,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     const speaker = people.speakerWithin(SPEAKER_WINDOW_S);
     const text = r.transcript.trim();
     if (!text) return;
+    lastSpeechMs = r.final ? -Infinity : nowMs;
 
     // Any speech: the dog perks up and looks at whoever is talking (rate limited).
     if (nowMs - lastHearMs >= VOICE_HEAR_EVERY_MS) {
@@ -429,6 +448,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       }
     } else {
       showChip(`“${text}”`);
+      if (r.final) sounds.heard(); // talked to: sometimes a "hm?" (commands get their own reply)
     }
     if (r.final) utteranceOpen = false; // the next utterance may repeat the command (after VOICE_REPEAT_MS)
   }
@@ -597,6 +617,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       if (!brain) return;
       const cmd = entry.cmd();
       brain.command(cmd);
+      sounds.commanded(cmd);
       party?.commanded(cmd);
       navigator.vibrate?.(12);
       syncButtons();
@@ -631,6 +652,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
   ui.voiceToggle.addEventListener("click", onVoiceToggle);
   cleanups.push(() => ui.voiceToggle.removeEventListener("click", onVoiceToggle));
   syncVoiceUI();
+  if (ui.soundToggle) cleanups.push(bindSoundButton(ui.soundToggle));
   if (voice?.supported && voiceWanted && voiceState === "off") {
     // Remembered "on": a browser only lets a tap start the mic, so wait for the first button press.
     ui.voiceHint.textContent = "Tap 🎤 to turn voice commands back on";
@@ -645,6 +667,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       dogClock = 0;
       brain = createPetBrain(newDog, anchor, floorY);
       party?.attach(newDog, anchor);
+      sounds.placed(newDog);
       unsubPet = brain.onPetStart((zone, point) => {
         fx.burst(point, zone);
         navigator.vibrate?.(petBuzz(newDog.species, zone));
@@ -726,7 +749,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
         return;
       }
     },
-    update(dt, viewer) {
+    update(dt, viewer, ear) {
       if (disposed) return;
       // Age perception between detections and forget stale entries.
       observationAge += dt;
@@ -756,6 +779,13 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
         dog.update(dogClock);
       }
       party?.update(dt, perception);
+      if (!ear) {
+        fallbackEar.position.copy(viewer.position);
+        fallbackEar.quaternion.setFromUnitVectors(AHEAD, viewer.forward);
+      }
+      // Mic on: duck the pets; someone mid-phrase: no chatter (it would talk over them / into the recogniser).
+      sounds.setMic(voiceState === "listening", performance.now() - lastSpeechMs < 1500);
+      sounds.update(dt, dog, party ? party.shownPets(shownPets) : shownPets, ear ?? fallbackEar);
       occluder.update(dt, perception.hands, handOcclusion);
       fx.update(dt);
       syncButtons();
@@ -773,6 +803,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       unsubPet = null;
       for (const off of cleanups) off();
       party?.dispose();
+      sounds.dispose();
       clearExtendTimer();
       releaseVoice();
       voice = null;

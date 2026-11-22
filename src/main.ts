@@ -1,6 +1,7 @@
 import "./style.css";
 import * as THREE from "three";
 import { requestMotionPermission, type MotionPermission } from "./tracking";
+import { primeAudio } from "./audio";
 import { primeVoice, releasePrimedVoice } from "./dogPlay";
 import { isCameraModeSupported, startCameraMode } from "./cameraMode";
 import { mountCreator } from "./creator";
@@ -150,6 +151,7 @@ function launcher(
         motion = Promise.resolve("unavailable");
       }
     }
+    primeAudio(); // also inside the tap: browsers (iOS above all) only start sound from a gesture
     if (!withMotion) primeVoice(); // inside the tap: the mic prompt needs the gesture, and AR may refuse it later
     deployButton.disabled = true;
     home.hidden = true;

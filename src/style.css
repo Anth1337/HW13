@@ -950,7 +950,7 @@ body {
   left: 0;
 }
 
-/* Small round tools stacked in the top-right corner: 🐾 (in a room), 🎤, 👁. */
+/* Small round tools stacked in the top-right corner: 🐾 (in a room), 🎤, 👁, 🔊. */
 .ar-tools {
   position: absolute;
   top: 0;
@@ -1030,6 +1030,11 @@ body {
 
 .btn-exit {
   font-size: 17px;
+}
+
+/* 🔊 / 🔇: dimmed while muted (src/audio/index.ts sets data-muted). */
+.btn-sound[data-muted="true"] {
+  opacity: 0.6;
 }
 
 /* Voice: 🎤 toggle with a pulse while listening; chip shows the last heard phrase and command. */
