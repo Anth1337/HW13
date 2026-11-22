@@ -246,6 +246,7 @@ export async function startCameraMode(
       forward: new THREE.Vector3(0, 0, -1),
     };
     const flatForward = new THREE.Vector3();
+    const ear = { position: camera.position, quaternion: camera.quaternion };
     const pose: TrackedPose = {
       position: new THREE.Vector3(),
       quaternion: new THREE.Quaternion(),
@@ -593,7 +594,7 @@ export async function startCameraMode(
           .addScaledVector(flatForward, ahead);
       }
 
-      play.update(dt, viewer); // brain, then dog.update(t)
+      play.update(dt, viewer, ear); // brain, then dog.update(t); ear (the camera itself): the pets' sounds
       if (dog) fitShadow();
 
       if (marker.visible) {

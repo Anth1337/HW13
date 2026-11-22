@@ -31,6 +31,8 @@ export interface PartyLink {
   update(dt: number, perception: Perception): void;
   /** This phone's player commanded their pet (button or voice). */
   commanded(cmd: DogCommand): void;
+  /** Friends' pets shown right now (their models), written into `out` (cleared first). */
+  shownPets(out: PetCharacter[]): PetCharacter[];
   dispose(): void;
 }
 
@@ -43,6 +45,8 @@ export interface PartyHooks {
   social(s: PetSocial | null): void;
   /** This phone's pet is idle enough to go and say hi by itself. */
   sociable(): boolean;
+  /** Two pets shown here start meeting: `a` walks over to `b` (greeting sounds). */
+  meet?(a: PetCharacter, b: PetCharacter): void;
 }
 
 const SEND_EVERY_MS = 100;
@@ -221,6 +225,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   const busy = (id: string) => meets.some((m) => m.a === id || m.b === id);
   const speciesOf = (id: string) => (id === self() ? dog?.species : pets.get(id)?.model.species);
   const lengthOf = (id: string) => (id === self() ? dog?.length : pets.get(id)?.model.length) ?? 0.5;
+  const characterOf = (id: string) => (id === self() ? dog : pets.get(id)?.model) ?? null;
 
   /** Floor position of a pet as shown on this phone, or null if it isn't shown. */
   function whereIs(id: string, out: THREE.Vector3): THREE.Vector3 | null {
@@ -260,6 +265,9 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
     if (a === self()) lastMetMs.set(b, now);
     else if (b === self()) lastMetMs.set(a, now);
     feed(`🐾 ${nameOf(a)} is saying hi to ${nameOf(b)}`);
+    const ca = characterOf(a);
+    const cb = characterOf(b);
+    if (ca && cb) hooks.meet?.(ca, cb);
     return true;
   }
 
@@ -521,6 +529,12 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
 
     commanded(cmd) {
       room.sendEvent({ k: "cmd", c: cmd } satisfies PetEvent);
+    },
+
+    shownPets(out) {
+      out.length = 0;
+      if (!disposed) for (const pet of pets.values()) if (pet.anchor.visible) out.push(pet.model);
+      return out;
     },
 
     dispose() {

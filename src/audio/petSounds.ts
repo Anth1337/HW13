@@ -1,0 +1,567 @@
+import * as THREE from "three";
+import { catBreedPreset } from "../cat/config";
+import type { CatBreed } from "../cat/types";
+import { breedPreset } from "../dog/config";
+import { TRICK_DURATION, type Breed, type DogCommand, type PetCharacter, type TrickKind } from "../dog/types";
+import { audioContext, audioOut, audioReady, claimShot, releaseShot, setAudioActive, setDuck } from "./engine";
+import {
+  Purr,
+  Shot,
+  bark,
+  barks,
+  chirps,
+  dogYawn,
+  growl,
+  howl,
+  huff,
+  licks,
+  meow,
+  pant,
+  sigh,
+  sniffs,
+  trill,
+  whimpers,
+  whine,
+  type Flavor,
+  type Tone,
+} from "./synth";
+
+/*
+ * The pets' voices during a play session (dogPlay.ts owns one PetSounds).
+ *
+ * Every pet this phone renders (its own pet and the friends' pets party.ts shows) gets a PetVoice:
+ * a small "sound brain" that watches the pet's PetControls each frame and speaks on transitions
+ * (petting starts / ends, a trick starts, sniffing starts, lying down, breaking into a run) plus
+ * now and then by itself. Controls are all it needs, so friends' pets, posed from their snapshots,
+ * sound exactly like this phone's pet, from where they stand here, without any sound being sent
+ * over the network (and without double-playing: each phone voices only what it renders).
+ * A few things controls can't tell are pushed in by dogPlay.ts: a command to this phone's pet, the
+ * user talking, placement, and the start of a meeting between two pets (party.ts).
+ *
+ * Each voice plays through its own HRTF PannerNode at the pet's head; the AudioListener follows
+ * the phone camera (setEar). Rates are deliberately low and every category has a cooldown: pets
+ * that never stop barking are annoying within a minute.
+ */
+
+/** The listener: the phone camera in world space (webxr.ts / cameraMode.ts pass their camera pose). */
+export type Ear = { position: THREE.Vector3; quaternion: THREE.Quaternion };
+
+export interface PetSounds {
+  /** Once per frame after the pets were posed: voices for the pets shown, listener, triggers. */
+  update(dt: number, own: PetCharacter | null, others: readonly PetCharacter[], ear: Ear): void;
+  /** This phone's pet was given a command (button, voice or a friend). */
+  commanded(cmd: DogCommand): void;
+  /** The user said something to this phone's pet (no command recognised). */
+  heard(): void;
+  /** A pet was just placed / deployed. */
+  placed(pet: PetCharacter): void;
+  /** Two pets shown here start meeting (a walks over to b). */
+  meet(a: PetCharacter, b: PetCharacter): void;
+  /** Voice commands: mic listening (duck everything) / a phrase being heard right now (hold chatter). */
+  setMic(listening: boolean, hearing: boolean): void;
+  dispose(): void;
+}
+
+// ---- Rates (seconds) ----------------------------------------------------------------------
+/** Idle bark / meow every IDLE_MIN..IDLE_MAX (×2.2 lying, ×0.6 excited). */
+const IDLE_MIN = 20;
+const IDLE_MAX = 60;
+/** Minimum gap between two sounds of one pet, and between any two sounds at all. */
+const PET_GAP = 0.8;
+const ANY_GAP = 0.3;
+/** Concurrent one-shots per pet (the engine also caps all pets together). */
+const PET_SHOTS = 2;
+const COOL = {
+  pet: 5, // happy noise when petting starts
+  murmur: 7, // sigh / whine / trill during long petting (randomised further)
+  sniff: 1.8,
+  run: 12,
+  lie: 15,
+  cmd: 2,
+  perk: 10,
+  hello: 3,
+  greet: 6,
+} as const;
+type Category = keyof typeof COOL | "idle" | "trick" | "pant" | "yawn";
+/** Ducked master level while the voice-command mic listens. */
+const MIC_DUCK = 0.45;
+const PURR_STOP_AFTER = 3;
+const DOG_FLAVOR: Partial<Record<Breed, Flavor>> = { husky: "husky", beagle: "beagle", pug: "pug" };
+const CAT_FLAVOR: Partial<Record<CatBreed, Flavor>> = { siamese: "siamese", persian: "persian", maineCoon: "maineCoon" };
+
+const rand = (a: number, b: number) => a + Math.random() * (b - a);
+const chance = (p: number) => Math.random() < p;
+const clamp01 = (x: number) => Math.min(1, Math.max(0, x));
+
+/** Pitch / formants / size from the species, breed height range and the size slider. */
+function toneFor(pet: PetCharacter): Tone {
+  const cfg = pet.config as { breed?: string; size?: number };
+  const size = clamp01(cfg.size ?? 0.5);
+  if (pet.species === "dog") {
+    const [lo, hi] = breedPreset((cfg.breed ?? "mutt") as Breed).heightRange;
+    const h = lo + (hi - lo) * size; // shoulder height, 0.18 (dachshund) … 0.65 (shepherd)
+    const flavor = DOG_FLAVOR[cfg.breed as Breed] ?? "none";
+    const big = clamp01((h - 0.2) / 0.42);
+    return {
+      species: "dog",
+      f0: (125 / h) * (flavor === "husky" ? 1.15 : 1),
+      fk: Math.sqrt(0.4 / h),
+      big,
+      rasp: flavor === "pug" ? 0.7 : flavor === "husky" ? 0.5 : 0.2 + 0.2 * big,
+      flavor,
+    };
+  }
+  const [lo, hi] = catBreedPreset((cfg.breed ?? "shorthair") as CatBreed).heightRange;
+  const h = lo + (hi - lo) * size; // 0.20 … 0.36
+  const flavor = CAT_FLAVOR[cfg.breed as CatBreed] ?? "none";
+  return {
+    species: "cat",
+    f0: 560 * Math.pow(0.25 / h, 0.6) * (flavor === "siamese" ? 0.8 : flavor === "persian" ? 1.1 : 1),
+    fk: Math.pow(0.25 / h, 0.4),
+    big: clamp01((h - 0.2) / 0.16),
+    rasp: flavor === "siamese" ? 0.45 : flavor === "persian" ? 0.08 : 0.15,
+    flavor,
+  };
+}
+
+type Recipe = (s: Shot, t: number, tone: Tone) => number;
+type SayOpts = { delay?: number; vol?: number; force?: boolean; cooldown?: number };
+
+/** What all voices share: the clock gate between any two sounds, and the mic hush. */
+type Shared = { lastAnyMs: number; hushed: boolean };
+
+class PetVoice {
+  readonly tone: Tone;
+  private readonly panner: PannerNode;
+  private readonly bus: GainNode;
+  private readonly shots = new Set<Shot>();
+  private readonly cool: Partial<Record<Category, number>> = {};
+  seen = true;
+  private lastSayMs = -Infinity;
+  // Edge trackers.
+  private petOn = false;
+  private petFor = 0;
+  private nextMurmur = 0;
+  private trick: TrickKind | null = null;
+  private sniffOn = false;
+  private nextSniffMs = 0;
+  private lying = false;
+  private lyingFor = 0;
+  private yawnAt = Infinity;
+  private running = false;
+  private pantUntil = 0; // audio time the scheduled panting runs to
+  private pantAfterMs = -Infinity; // keep panting until then (after a trick)
+  private nextIdleMs: number;
+  private purr: Purr | null = null;
+  private purrSilent = 0;
+
+  constructor(
+    readonly pet: PetCharacter,
+    private readonly ac: AudioContext,
+    out: AudioNode,
+    private readonly shared: Shared,
+  ) {
+    this.tone = toneFor(pet);
+    this.panner = ac.createPanner();
+    this.panner.panningModel = "HRTF";
+    this.panner.distanceModel = "inverse";
+    this.panner.refDistance = 0.7;
+    this.panner.rolloffFactor = 1;
+    this.panner.maxDistance = 30;
+    this.bus = ac.createGain();
+    this.bus.gain.value = 1;
+    this.bus.connect(this.panner).connect(out);
+    this.nextIdleMs = performance.now() + rand(8, 25) * 1000; // first one a bit sooner
+  }
+
+  private get dog() {
+    return this.tone.species === "dog";
+  }
+
+  /** Head position from the root's last world matrix (no matrix updates: one frame late is fine). */
+  place(p: THREE.Vector3): void {
+    const m = this.pet.root.matrixWorld.elements;
+    const sy = Math.hypot(m[4], m[5], m[6]) || 1;
+    const sz = Math.hypot(m[8], m[9], m[10]) || 1;
+    const up = (this.pet.height * 0.8) / sy;
+    const fwd = (this.pet.length * 0.4) / sz;
+    p.set(m[12] + m[4] * up + m[8] * fwd, m[13] + m[5] * up + m[9] * fwd, m[14] + m[6] * up + m[10] * fwd);
+    const pn = this.panner;
+    if (pn.positionX) {
+      pn.positionX.value = p.x;
+      pn.positionY.value = p.y;
+      pn.positionZ.value = p.z;
+    } else {
+      pn.setPosition(p.x, p.y, p.z);
+    }
+  }
+
+  /** Plays a recipe if this pet may speak now. True if it started. */
+  say(cat: Category, recipe: Recipe, o: SayOpts = {}): boolean {
+    const now = performance.now();
+    if (!audioReady()) return false;
+    if ((this.cool[cat] ?? -Infinity) > now) return false;
+    if (!o.force && (this.shared.hushed || now - this.lastSayMs < PET_GAP * 1000 || now - this.shared.lastAnyMs < ANY_GAP * 1000)) return false;
+    if (this.shots.size >= PET_SHOTS || !claimShot()) return false;
+    let shot: Shot | null = null;
+    try {
+      const s: Shot = (shot = new Shot(this.ac, this.bus, o.vol ?? 1, () => {
+        this.shots.delete(s);
+        releaseShot();
+      }));
+      this.shots.add(s);
+      const t = this.ac.currentTime + 0.01 + (o.delay ?? 0);
+      s.end(recipe(s, t, this.tone));
+    } catch (err) {
+      console.warn("[sound] failed", err);
+      if (shot) shot.kill(); // releases the slot
+      else releaseShot();
+      return false;
+    }
+    const cd = o.cooldown ?? (cat in COOL ? COOL[cat as keyof typeof COOL] : 0);
+    this.cool[cat] = now + cd * 1000;
+    if (cat !== "pant") {
+      this.lastSayMs = now + (o.delay ?? 0) * 1000;
+      this.shared.lastAnyMs = now;
+    }
+    return true;
+  }
+
+  update(dt: number, now: number): void {
+    const c = this.pet.controls;
+    const dog = this.dog;
+
+    // Petting: a happy noise as it starts, then panting / purring while it lasts.
+    const p = Math.max(c.petHead, c.petBody);
+    if (!this.petOn && p > 0.35) {
+      this.petOn = true;
+      this.petFor = 0;
+      this.nextMurmur = now + rand(5, 9) * 1000;
+      this.petStart();
+    } else if (this.petOn && p < 0.12) {
+      this.petOn = false;
+      if (this.petFor > 2.5) this.petEnd();
+    }
+    if (this.petOn) {
+      this.petFor += dt;
+      if (now >= this.nextMurmur) {
+        this.nextMurmur = now + rand(COOL.murmur, COOL.murmur * 1.8) * 1000;
+        this.murmur();
+      }
+    }
+    if (!dog) this.updatePurr(dt, p);
+
+    // Tricks (also friends' pets: their snapshots carry the trick). Joined late: stay quiet.
+    const tk = c.trick?.kind ?? null;
+    if (tk !== this.trick) {
+      this.trick = tk;
+      if (tk && c.trick && c.trick.progress < 0.3) this.trickSounds(tk, c.trick.progress);
+    }
+
+    // Sniffing (the ground, a hand, another pet's nose).
+    if (!this.sniffOn && c.sniff > 0.5 && !c.trick) {
+      this.sniffOn = true;
+      this.nextSniffMs = now + rand(100, 500);
+    } else if (this.sniffOn && c.sniff < 0.3) {
+      this.sniffOn = false;
+    }
+    if (this.sniffOn && now >= this.nextSniffMs) {
+      this.nextSniffMs = now + rand(1.8, 3.5) * 1000;
+      const n = 3 + Math.floor(Math.random() * 4);
+      this.say("sniff", (s, t, tone) => sniffs(s, t, tone, n), { vol: dog ? 0.7 : 0.45 });
+    }
+
+    // Lying down: sometimes a sigh, and a yawn once it has been lying a while.
+    if (!this.lying && c.lie > 0.7) {
+      this.lying = true;
+      this.lyingFor = 0;
+      this.yawnAt = rand(20, 40);
+      if (chance(0.4)) this.say("lie", dog ? (s, t, tone) => sigh(s, t, tone, chance(0.5), 0.8) : (s, t, tone) => trill(s, t, tone, 0.5), { delay: 0.6 });
+    } else if (this.lying && c.lie < 0.3) {
+      this.lying = false;
+    }
+    if (this.lying && (this.lyingFor += dt) >= this.yawnAt) {
+      this.yawnAt = Infinity;
+      if (chance(0.55)) this.say("yawn", dog ? dogYawn : (s, t, tone) => meow(s, t, tone, "yawn"));
+    }
+
+    // Breaking into a run while excited (coming when called, chasing): an excited bark / chirp.
+    if (!this.running && c.gait.speed > 0.85) {
+      this.running = true;
+      if (c.excitement >= 0.5 && chance(0.35)) {
+        this.say("run", dog ? (s, t, tone) => barks(s, t, tone, 1 + Math.floor(Math.random() * 2), { pitch: 1.08 }) : (s, t, tone) => chirps(s, t, tone, 2, 0.7));
+      }
+    } else if (this.running && c.gait.speed < 0.6) {
+      this.running = false;
+    }
+
+    // Dogs pant while petted, and for a few seconds after a trick.
+    if (dog && ((this.petOn && this.petFor > 0.8) || now < this.pantAfterMs) && !c.trick && this.shots.size === 0 && !this.shared.hushed) {
+      if (this.ac.currentTime > this.pantUntil - 0.15) {
+        const secs = rand(1.6, 2.4);
+        if (this.say("pant", (s, t, tone) => pant(s, t, tone, secs), { vol: 0.5, force: true })) this.pantUntil = this.ac.currentTime + secs;
+      }
+    }
+
+    // Now and then, by itself.
+    if (now >= this.nextIdleMs) {
+      this.nextIdleMs = now + rand(IDLE_MIN, IDLE_MAX) * 1000 * (this.lying ? 2.2 : 1) * (c.excitement > 0.7 ? 0.6 : 1);
+      if (!this.petOn && !c.trick && !this.sniffOn && now - this.lastSayMs > 4000) this.idle();
+    }
+  }
+
+  private updatePurr(dt: number, p: number) {
+    const level = this.petOn ? Math.max(0.6, clamp01(p * 1.1)) : clamp01((p - 0.1) / 0.5);
+    if (level > 0.02 && audioReady()) {
+      this.purr ??= new Purr(this.ac, this.bus, this.tone);
+      this.purr.set(level);
+      this.purrSilent = 0;
+    } else if (this.purr) {
+      this.purr.set(0);
+      if ((this.purrSilent += dt) > PURR_STOP_AFTER || !audioReady()) {
+        this.purr.stop();
+        this.purr = null;
+      }
+    }
+  }
+
+  private petStart() {
+    if (this.dog) {
+      this.say("pet", chance(0.55) ? (s, t, tone) => whimpers(s, t, tone) : (s, t, tone) => bark(s, t, tone, { vol: 0.5, len: 0.8, pitch: 1.12 }), {
+        force: true,
+        vol: 0.8,
+      });
+    } else {
+      this.say("pet", chance(0.55) ? (s, t, tone) => trill(s, t, tone, 0.8) : (s, t, tone) => meow(s, t, tone, "mew", 0.8), { force: true });
+    }
+  }
+
+  private murmur() {
+    if (this.dog) {
+      this.say("murmur", chance(0.5) ? (s, t, tone) => sigh(s, t, tone, true, 0.7) : (s, t, tone) => whine(s, t, tone, { len: 0.45, vol: 0.45, lift: 0.3 }));
+    } else if (chance(0.35)) {
+      this.say("murmur", (s, t, tone) => trill(s, t, tone, 0.45));
+    }
+  }
+
+  private petEnd() {
+    if (this.dog && chance(0.35)) this.say("murmur", (s, t, tone) => sigh(s, t, tone, false, 0.7), { delay: 0.3 });
+    else if (!this.dog && chance(0.25)) this.say("murmur", (s, t, tone) => meow(s, t, tone, "mew", 0.6), { delay: 0.4 });
+  }
+
+  /** Sounds timed to the trick's animation (TRICK_DURATION), all in one shot. */
+  private trickSounds(kind: TrickKind, progress: number) {
+    const D = TRICK_DURATION[kind];
+    const at = (u: number) => Math.max(0, (u - progress) * D);
+    let r: Recipe;
+    switch (kind) {
+      case "jump": // "hup!" at take-off
+        if (!chance(0.85)) return;
+        r = (s, t, tone) => bark(s, t + at(0.22), tone, { pitch: 1.08, len: 0.9 });
+        this.pantAfterMs = performance.now() + (D + 4) * 1000;
+        break;
+      case "spin": {
+        // Excited yips while turning.
+        const n = 2 + Math.floor(Math.random() * 2);
+        r = (s, t, tone) => {
+          let end = t;
+          for (let i = 0; i < n; i++) end = bark(s, t + at(0.08 + i * 0.3) + rand(0, 0.08), tone, { pitch: 1.3, len: 0.55, vol: 0.8 });
+          return end;
+        };
+        this.pantAfterMs = performance.now() + (D + 4) * 1000;
+        break;
+      }
+      case "rollOver": // happy grumble going over, sometimes a bark back on its feet
+        r = (s, t, tone) => {
+          const end = growl(s, t + at(0.1), tone, D * 0.4, 0.75);
+          return chance(0.5) ? Math.max(end, bark(s, t + at(0.82), tone, { pitch: 1.1 })) : end;
+        };
+        this.pantAfterMs = performance.now() + (D + 4) * 1000;
+        break;
+      case "pounce": // chatter while wiggling, a little "mrrp" on landing
+        r = (s, t, tone) => {
+          const end = chirps(s, t + at(0.04), tone, 3 + Math.floor(Math.random() * 2), 0.7);
+          return chance(0.5) ? Math.max(end, trill(s, t + at(0.6), tone, 0.6)) : end;
+        };
+        break;
+      case "stretch": // stretch-yawn
+        r = (s, t, tone) => meow(s, t + at(0.2), tone, "yawn");
+        break;
+      case "groom":
+        r = (s, t) => licks(s, t + at(0.15), 6 + Math.floor(Math.random() * 4), D * 0.6, 0.5);
+        break;
+    }
+    this.say("trick", r, { force: true });
+  }
+
+  private idle() {
+    const dog = this.dog;
+    const fl = this.tone.flavor;
+    const x = Math.random();
+    if (this.lying) {
+      if (dog) this.say("idle", x < 0.6 ? (s, t, tone) => sigh(s, t, tone, true, 0.6) : (s, t, tone) => whine(s, t, tone, { len: 0.5, vol: 0.4 }));
+      else if (x < 0.6) this.say("idle", (s, t, tone) => trill(s, t, tone, 0.45));
+      return;
+    }
+    if (dog) {
+      if ((fl === "husky" && x < 0.3) || (fl === "beagle" && x < 0.2)) this.say("idle", (s, t, tone) => howl(s, t, tone, fl === "beagle" ? 1.4 : 1, 0.8));
+      else if (x < 0.55) this.say("idle", (s, t, tone) => barks(s, t, tone, 1 + Math.floor(Math.random() * 2)));
+      else if (x < 0.75) this.say("idle", (s, t, tone) => whine(s, t, tone, { lift: 0.7 }));
+      else if (x < 0.9) this.say("idle", (s, t, tone) => huff(s, t, tone));
+      else this.say("idle", (s, t, tone) => sigh(s, t, tone, true, 0.7));
+    } else {
+      const trills = fl === "maineCoon" ? 0.5 : 0.25;
+      if (x < trills) this.say("idle", (s, t, tone) => trill(s, t, tone));
+      else if (x < 0.85) this.say("idle", (s, t, tone) => meow(s, t, tone, chance(0.3) ? "long" : chance(0.4) ? "question" : "meow"));
+      else this.say("idle", (s, t, tone) => meow(s, t, tone, "mew"));
+    }
+  }
+
+  // ---- Pushed in by dogPlay.ts / party.ts ----
+
+  ack(cmd: DogCommand) {
+    if (cmd in TRICK_DURATION) return; // the trick makes its own noise
+    const o: SayOpts = { force: true, delay: 0.15 };
+    if (this.dog) {
+      if (cmd === "come" && chance(0.75)) this.say("cmd", chance(0.5) ? (s, t, tone) => barks(s, t, tone, 2, { pitch: 1.1 }) : (s, t, tone) => whimpers(s, t, tone), o);
+      else if (cmd === "sit" && chance(0.5)) this.say("cmd", chance(0.5) ? (s, t, tone) => huff(s, t, tone) : (s, t, tone) => bark(s, t, tone, { vol: 0.55, len: 0.7 }), o);
+      else if (cmd === "lie" && chance(0.6)) this.say("cmd", (s, t, tone) => sigh(s, t, tone, true, 0.8), { ...o, delay: 0.9 });
+      else if (chance(0.35)) this.say("cmd", (s, t, tone) => huff(s, t, tone, 0.8), o);
+    } else {
+      if (cmd === "come" && chance(0.8)) this.say("cmd", chance(0.5) ? (s, t, tone) => trill(s, t, tone) : (s, t, tone) => meow(s, t, tone, "question"), o);
+      else if (cmd === "sit" && chance(0.35)) this.say("cmd", (s, t, tone) => meow(s, t, tone, "mew", 0.6), o);
+      else if (cmd === "lie" && chance(0.35)) this.say("cmd", (s, t, tone) => trill(s, t, tone, 0.5), { ...o, delay: 0.8 });
+      else if (chance(0.25)) this.say("cmd", (s, t, tone) => meow(s, t, tone, "mew", 0.55), o);
+    }
+  }
+
+  /** Spoken to: sometimes a questioning "hm?". Never forced: held while a phrase is being heard. */
+  perk() {
+    if (!chance(0.3)) return;
+    if (this.dog) this.say("perk", chance(0.5) ? (s, t, tone) => huff(s, t, tone, 0.6) : (s, t, tone) => whine(s, t, tone, { len: 0.35, vol: 0.45, lift: 1 }));
+    else this.say("perk", chance(0.5) ? (s, t, tone) => meow(s, t, tone, "question", 0.6) : (s, t, tone) => trill(s, t, tone, 0.55));
+  }
+
+  hello() {
+    const o: SayOpts = { force: true, delay: 0.5 };
+    if (this.dog) this.say("hello", chance(0.6) ? (s, t, tone) => barks(s, t, tone, 2) : (s, t, tone) => whimpers(s, t, tone), o);
+    else this.say("hello", chance(0.5) ? (s, t, tone) => trill(s, t, tone) : (s, t, tone) => meow(s, t, tone), o);
+  }
+
+  /** A meeting starts: the visitor calls out, the other answers a moment later. */
+  greet(other: "dog" | "cat", visitor: boolean) {
+    const o: SayOpts = { force: true, delay: visitor ? 0.2 : rand(1, 1.6) };
+    let r: Recipe;
+    if (this.dog) {
+      if (other === "dog") r = visitor ? (s, t, tone) => barks(s, t, tone, 2, { pitch: 1.05 }) : chance(0.6) ? (s, t, tone) => bark(s, t, tone) : (s, t, tone) => whimpers(s, t, tone);
+      // A cat! Curious and excited, but polite: a whine, then a single bark.
+      else r = (s, t, tone) => Math.max(whine(s, t, tone, { len: 0.4, lift: 0.9 }), bark(s, t + 0.55, tone, { vol: 0.7 }));
+    } else {
+      if (other === "cat") r = (s, t, tone) => trill(s, t, tone);
+      else r = (s, t, tone) => meow(s, t, tone, "wary"); // a dog: a short, wary meow
+    }
+    this.say("greet", r, o);
+  }
+
+  dispose() {
+    this.purr?.stop();
+    this.purr = null;
+    for (const s of [...this.shots]) s.kill();
+    this.bus.disconnect();
+    this.panner.disconnect();
+  }
+}
+
+export function createPetSounds(): PetSounds {
+  const ac = audioContext();
+  const out = audioOut();
+  setAudioActive(true);
+  const voices: PetVoice[] = [];
+  const shared: Shared = { lastAnyMs: -Infinity, hushed: false };
+  let own: PetVoice | null = null;
+  let disposed = false;
+  const pos = new THREE.Vector3();
+  const fwd = new THREE.Vector3();
+  const up = new THREE.Vector3();
+
+  function voiceFor(pet: PetCharacter): PetVoice | null {
+    if (!ac || !out || disposed) return null;
+    for (const v of voices) if (v.pet === pet) return v;
+    const v = new PetVoice(pet, ac, out, shared);
+    voices.push(v);
+    return v;
+  }
+
+  function setEar(ear: Ear) {
+    if (!ac) return;
+    const l = ac.listener;
+    const p = ear.position;
+    fwd.set(0, 0, -1).applyQuaternion(ear.quaternion);
+    up.set(0, 1, 0).applyQuaternion(ear.quaternion);
+    if (l.positionX) {
+      l.positionX.value = p.x;
+      l.positionY.value = p.y;
+      l.positionZ.value = p.z;
+      l.forwardX.value = fwd.x;
+      l.forwardY.value = fwd.y;
+      l.forwardZ.value = fwd.z;
+      l.upX.value = up.x;
+      l.upY.value = up.y;
+      l.upZ.value = up.z;
+    } else {
+      l.setPosition(p.x, p.y, p.z);
+      l.setOrientation(fwd.x, fwd.y, fwd.z, up.x, up.y, up.z);
+    }
+  }
+
+  return {
+    update(dt, ownPet, others, ear) {
+      if (disposed || !ac) return;
+      for (const v of voices) v.seen = false;
+      own = ownPet ? voiceFor(ownPet) : null;
+      if (own) own.seen = true;
+      for (const pet of others) {
+        const v = voiceFor(pet);
+        if (v) v.seen = true;
+      }
+      // Pets no longer shown (friend left, hidden, re-created) go quiet at once.
+      for (let i = voices.length - 1; i >= 0; i--) {
+        if (voices[i].seen) continue;
+        voices[i].dispose();
+        voices.splice(i, 1);
+      }
+      setEar(ear);
+      const now = performance.now();
+      for (const v of voices) {
+        v.place(pos);
+        v.update(dt, now);
+      }
+    },
+    commanded(cmd) {
+      own?.ack(cmd);
+    },
+    heard() {
+      own?.perk();
+    },
+    placed(pet) {
+      voiceFor(pet)?.hello();
+    },
+    meet(a, b) {
+      voiceFor(a)?.greet(b.species, true);
+      voiceFor(b)?.greet(a.species, false);
+    },
+    setMic(listening, hearing) {
+      setDuck(listening ? MIC_DUCK : 1);
+      shared.hushed = hearing;
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      for (const v of voices) v.dispose();
+      voices.length = 0;
+      own = null;
+      setDuck(1);
+      setAudioActive(false);
+    },
+  };
+}
