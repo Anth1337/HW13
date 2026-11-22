@@ -137,7 +137,7 @@ export function createPreview(renderer: THREE.WebGLRenderer, initial: Pet | null
     const bottom = insets ? insets.bottom : portrait ? height * 0.55 : 0;
     const right = insets ? insets.right : portrait ? 0 : Math.min(420, width * 0.4);
     // Never let the visible area shrink to nothing.
-    const coveredY = Math.min(0.72, bottom / height);
+    const coveredY = Math.min(0.85, bottom / height); // 0.85: the start sheet can be dragged to 88%
     const coveredX = Math.min(0.6, right / width);
 
     camera.aspect = aspect;

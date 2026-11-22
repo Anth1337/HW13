@@ -6,7 +6,9 @@ import { petStore, type Species } from "./pets";
 
 /*
  * The character creator: fills #creator with labelled controls for the active pet (petStore),
- * using the controls for its species. Discrete choices (breed, sex, chips, toggles) commit at
+ * using the controls for its species. A sticky bar holds the name, 🎲 and a row of section tabs
+ * (Breed, Body, Coat…) that jump to a section and follow the scroll position, so getting to a
+ * setting never takes more than a tap. Discrete choices (breed, sex, chips, toggles) commit at
  * once; slider / colour drags and name typing are debounced (~80 ms) so the preview isn't
  * rebuilt on every input event. Mounted for one pet: main.ts destroys + remounts it when the
  * active pet changes.
@@ -39,6 +41,9 @@ export function el<K extends keyof HTMLElementTagNameMap>(
   for (const c of children) node.append(c);
   return node;
 }
+
+/** Sliders side by side (two columns when the panel is wide enough, see .cr-grid). */
+const grid = (...children: Node[]) => el("div", { class: "cr-grid" }, children);
 
 /** Three-word description of a 0..1 slider value. */
 const words = (lo: string, mid: string, hi: string) => (v: number) => (v < 0.34 ? lo : v > 0.66 ? hi : mid);
@@ -108,9 +113,11 @@ const DOG: SpeciesUI<DogConfig> = {
     ];
     section(
       "Face",
-      slider("Snout", (c) => c.face.snoutLength, (c, v) => (c.face.snoutLength = v), words("Flat", "Medium", "Long")),
+      grid(
+        slider("Snout", (c) => c.face.snoutLength, (c, v) => (c.face.snoutLength = v), words("Flat", "Medium", "Long")),
+        slider("Eye size", (c) => c.face.eyeSize, (c, v) => (c.face.eyeSize = v), words("Small", "Medium", "Big")),
+      ),
       chips("Ears", ears, (c) => c.face.earStyle, (c, v) => (c.face.earStyle = v)),
-      slider("Eye size", (c) => c.face.eyeSize, (c, v) => (c.face.eyeSize = v), words("Small", "Medium", "Big")),
       el("div", { class: "cr-colors" }, [
         color("Eyes", (c) => c.face.eyeColor, (c, v) => (c.face.eyeColor = v)),
         color("Nose", (c) => c.face.noseColor, (c, v) => (c.face.noseColor = v)),
@@ -163,9 +170,11 @@ const CAT: SpeciesUI<CatConfig> = {
     ];
     section(
       "Face",
-      slider("Muzzle", (c) => c.face.muzzle, (c, v) => (c.face.muzzle = v), words("Flat", "Medium", "Wedge")),
+      grid(
+        slider("Muzzle", (c) => c.face.muzzle, (c, v) => (c.face.muzzle = v), words("Flat", "Medium", "Wedge")),
+        slider("Eye size", (c) => c.face.eyeSize, (c, v) => (c.face.eyeSize = v), words("Small", "Medium", "Big")),
+      ),
       chips("Ears", ears, (c) => c.face.earStyle, (c, v) => (c.face.earStyle = v)),
-      slider("Eye size", (c) => c.face.eyeSize, (c, v) => (c.face.eyeSize = v), words("Small", "Medium", "Big")),
       el("div", { class: "cr-colors" }, [
         color("Eyes", (c) => c.face.eyeColor, (c, v) => (c.face.eyeColor = v)),
         color("Nose", (c) => c.face.noseColor, (c, v) => (c.face.noseColor = v)),
@@ -254,19 +263,25 @@ function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: Spe
   });
   diceIcon.addEventListener("animationend", () => diceIcon.classList.remove("rolling"));
 
-  root.append(
+  /** Section tabs, filled in once every section exists (see the end of build). */
+  const nav = el("nav", { class: "cr-nav", "aria-label": "Jump to a section" });
+  const bar = el("div", { class: "cr-sticky" }, [
     el("div", { class: "cr-top" }, [
       el("div", { class: "cr-name-wrap" }, [el("label", { for: nameId, class: "cr-label", text: "Name" }), nameInput]),
       dice,
     ]),
-  );
+    nav,
+  ]);
+  root.append(bar);
 
   /* ---- Building blocks ---- */
+  const sections: { title: string; el: HTMLElement }[] = [];
   const section = (title: string, ...children: Node[]) => {
     const id = nextId("sec");
     const s = el("section", { class: "cr-section", "aria-labelledby": id }, [el("h2", { id, class: "cr-h", text: title })]);
     s.append(...children);
     root.append(s);
+    sections.push({ title, el: s });
     return s;
   };
 
@@ -388,6 +403,7 @@ function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: Spe
   const breedSection = el("section", { class: "cr-section", "aria-label": "Breed" }, [breedHead, breedField]);
   breedField.querySelector(".cr-label")?.classList.add("visually-hidden");
   root.append(breedSection);
+  sections.push({ title: "Breed", el: breedSection });
 
   /* ---- Body ---- */
   const heightCm = (v: number, c: C) => {
@@ -397,9 +413,11 @@ function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: Spe
   section(
     "Body",
     chips("Sex", SEXES, (c) => c.sex, (c, v) => (c.sex = v), { segmented: true }),
-    slider("Size", (c) => c.size, (c, v) => (c.size = v), heightCm),
-    slider("Build", (c) => c.build, (c, v) => (c.build = v), words(...ui.build)),
-    slider("Leg length", (c) => c.legLength, (c, v) => (c.legLength = v), words("Short", "Average", "Long")),
+    grid(
+      slider("Size", (c) => c.size, (c, v) => (c.size = v), heightCm),
+      slider("Build", (c) => c.build, (c, v) => (c.build = v), words(...ui.build)),
+      slider("Leg length", (c) => c.legLength, (c, v) => (c.legLength = v), words("Short", "Average", "Long")),
+    ),
   );
 
   /* ---- Coat ---- */
@@ -446,7 +464,53 @@ function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: Spe
   /* ---- Face, tail, collar: per species ---- */
   ui.extra({ section, chips, slider, color, toggle });
 
+  /* ---- Section tabs ---- */
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  /** Top of a section in the scroller's coordinates, minus the sticky bar. */
+  const sectionTop = (s: HTMLElement) =>
+    container.scrollTop + s.getBoundingClientRect().top - container.getBoundingClientRect().top - bar.offsetHeight;
+  const tabs = sections.map(({ title, el: s }) => {
+    const b = el("button", { type: "button", class: "cr-tab", text: title });
+    b.addEventListener("click", () => {
+      container.scrollTo({ top: Math.max(0, sectionTop(s) + 1), behavior: reduceMotion.matches ? "auto" : "smooth" });
+      setCurrent(s);
+    });
+    nav.append(b);
+    return { b, s };
+  });
+  let current: HTMLElement | null = null;
+  function setCurrent(s: HTMLElement) {
+    if (s === current) return;
+    current = s;
+    for (const t of tabs) {
+      if (t.s === s) {
+        t.b.setAttribute("aria-current", "true");
+        // Keep the tab visible in the (horizontally scrolling) row.
+        const left = t.b.offsetLeft - nav.offsetLeft;
+        if (left < nav.scrollLeft || left + t.b.offsetWidth > nav.scrollLeft + nav.clientWidth) nav.scrollLeft = left - 12;
+      } else t.b.removeAttribute("aria-current");
+    }
+  }
+  /** The last section whose top has reached the bar (the last one once scrolled to the end). */
+  const trackScroll = () => {
+    if (!tabs.length || container.clientHeight === 0) return;
+    if (container.scrollTop + container.clientHeight >= container.scrollHeight - 2) return setCurrent(tabs[tabs.length - 1].s);
+    let on = tabs[0].s;
+    for (const t of tabs) if (sectionTop(t.s) <= container.scrollTop + 8) on = t.s;
+    setCurrent(on);
+  };
+  let scrollFrame = 0;
+  const onScroll = () => {
+    if (!scrollFrame) scrollFrame = requestAnimationFrame(() => ((scrollFrame = 0), trackScroll()));
+  };
+  container.addEventListener("scroll", onScroll, { passive: true });
+  cleanups.push(() => {
+    container.removeEventListener("scroll", onScroll);
+    cancelAnimationFrame(scrollFrame);
+  });
+
   container.replaceChildren(root);
+  if (tabs.length) setCurrent(tabs[0].s);
 
   const syncAll = (c: C) => {
     for (const s of syncers) s(c);

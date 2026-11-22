@@ -2,13 +2,17 @@ import { renderSVG } from "uqr";
 import "./net.css";
 import { currentRoom, inviteURL, joinRoom, leaveRoom, newRoomCode, onRoomChange } from "./index";
 import { localPetCard, petEmoji, petName } from "./kinds";
-import { MAX_PLAYERS } from "./protocol";
+import { petStore } from "../pets";
+import { MAX_PLAYERS, ROOM_CODE_RE } from "./protocol";
 import type { RoomClient } from "./room";
 
 /*
  * Room UI, built from code so index.html stays as it is:
- *  - start screen: a 👥 button next to Deploy (creates a room if needed) that opens the invite
- *    sheet: QR code + link + who is in the room (big enough to show on a projector)
+ *  - start screen: a 👥 button next to Deploy that opens the "Play together" sheet:
+ *      lobby (not in a room): the pet you'll bring, a room-code box to join a friend (a pasted
+ *        invite link works too), or "Start a new room"
+ *      room: QR code + code + link (copy / share), who is in the room (big enough to show on a
+ *        projector), and Leave
  *  - AR / camera overlay: the feed (short chips under the hint) and the 🐾 say-hi button
  * Names come from other players: always set with textContent.
  */
@@ -18,24 +22,77 @@ const FEED_MAX = 3;
 /** Someone who sent a snapshot this recently is in AR with their pet. */
 const PLAYING_MS = 3000;
 
+/** A room code from what someone typed or pasted: "ABCD", " ab cd ", or a whole invite link. */
+export function parseRoomInput(raw: string): string | null {
+  let text = raw.trim();
+  if (!text) return null;
+  if (/room=/i.test(text) || /^https?:\/\//i.test(text)) {
+    try {
+      text = new URL(text, location.href).searchParams.get("room") ?? "";
+    } catch {
+      return null;
+    }
+  }
+  const code = text.replace(/\s+/g, "").toLowerCase();
+  return ROOM_CODE_RE.test(code) ? code : null;
+}
+
 export function mountRoomUI(actions: HTMLElement): void {
   const button = el("button", "btn net-friends");
   button.type = "button";
+  button.setAttribute("aria-haspopup", "dialog");
   actions.prepend(button);
 
   const sheet = el("div", "net-sheet");
   sheet.hidden = true;
   sheet.setAttribute("role", "dialog");
   sheet.setAttribute("aria-modal", "true");
-  sheet.setAttribute("aria-label", "Play together");
+  sheet.setAttribute("aria-labelledby", "net-title");
   const card = el("div", "net-card");
   const head = el("div", "net-card-head");
   const title = el("h2", "net-title", "Play together");
+  title.id = "net-title";
   const close = el("button", "net-x", "✕");
   close.type = "button";
   close.setAttribute("aria-label", "Close");
   head.append(title, close);
-  const lead = el("p", "net-lead", "Scan with your phone camera to bring your pet to the party.");
+
+  /* ---- Lobby: join a friend's room, or start one ---- */
+  const lobby = el("div", "net-lobby");
+  const bringing = el("p", "net-bringing");
+  const joinForm = el("form", "net-join");
+  joinForm.noValidate = true;
+  const joinLabel = el("label", "net-h net-join-label", "Join a friend");
+  joinLabel.htmlFor = "net-code-input";
+  const joinRow = el("div", "net-join-row");
+  const codeInput = el("input", "net-code-input");
+  codeInput.id = "net-code-input";
+  codeInput.type = "text";
+  codeInput.placeholder = "Room code";
+  codeInput.autocomplete = "off";
+  codeInput.spellcheck = false;
+  codeInput.maxLength = 200; // room for a pasted invite link
+  codeInput.setAttribute("autocapitalize", "characters");
+  codeInput.setAttribute("autocorrect", "off");
+  codeInput.setAttribute("enterkeyhint", "go");
+  codeInput.setAttribute("aria-describedby", "net-join-help");
+  const joinBtn = el("button", "btn btn-primary net-join-btn", "Join");
+  joinBtn.type = "submit";
+  joinRow.append(codeInput, joinBtn);
+  const joinHelp = el("p", "net-help", "The 4-letter code on your friend's screen, or paste their invite link.");
+  joinHelp.id = "net-join-help";
+  joinForm.append(joinLabel, joinRow, joinHelp);
+  const or = el("div", "net-or");
+  or.append(el("span", "", "or"));
+  const host = el("div", "net-host");
+  const hostBtn = el("button", "btn net-host-btn", "Start a new room");
+  hostBtn.type = "button";
+  host.append(hostBtn, el("p", "net-help", "Get a code and QR to share. Up to " + MAX_PLAYERS + " pets per room."));
+  lobby.append(bringing, joinForm, or, host);
+
+  /* ---- In a room: invite + roster ---- */
+  const inRoom = el("div", "net-room");
+  const lead = el("p", "net-lead", "Friends scan this with their phone camera, or type the code.");
   const qr = el("div", "net-qr");
   const code = el("p", "net-code");
   const linkRow = el("div", "net-link-row");
@@ -44,19 +101,36 @@ export function mountRoomUI(actions: HTMLElement): void {
   link.rel = "noopener";
   const copy = el("button", "net-small", "Copy link");
   copy.type = "button";
-  linkRow.append(link, copy);
+  const share = el("button", "net-small", "Share…");
+  share.type = "button";
+  share.hidden = typeof navigator.share !== "function";
+  linkRow.append(link, copy, share);
   const status = el("p", "net-status");
+  status.setAttribute("role", "status");
   const listTitle = el("h3", "net-h");
   const list = el("ul", "net-list");
+  const empty = el("p", "net-help net-empty", "No one else here yet. Share the code to invite friends.");
+  const roomActions = el("div", "net-room-actions");
+  const retry = el("button", "net-small", "Try another code");
+  retry.type = "button";
   const leave = el("button", "net-small net-leave", "Leave room");
   leave.type = "button";
-  card.append(head, lead, qr, code, linkRow, status, listTitle, list, leave);
+  roomActions.append(retry, leave);
+  inRoom.append(lead, qr, code, linkRow, status, listTitle, list, empty, roomActions);
+
+  card.append(head, lobby, inRoom);
   sheet.append(card);
   document.body.append(sheet);
 
   let shownFor: RoomClient | null = null;
   let unsub: (() => void) | null = null;
   let tick: ReturnType<typeof setInterval> | undefined;
+
+  function setJoinError(msg: string | null) {
+    joinHelp.textContent = msg ?? "The 4-letter code on your friend's screen, or paste their invite link.";
+    joinHelp.classList.toggle("net-error", !!msg);
+    codeInput.setAttribute("aria-invalid", String(!!msg));
+  }
 
   function render() {
     const room = currentRoom();
@@ -68,9 +142,22 @@ export function mountRoomUI(actions: HTMLElement): void {
         : room.status === "full"
           ? "👥 Room full"
           : "👥 Connecting…";
-    button.title = room ? `Room ${room.code}: invite friends` : "Play with friends";
+    button.title = room ? `Room ${room.code.toUpperCase()}: invite friends` : "Join a friend's room or start one";
     button.classList.toggle("net-in-room", !!room);
-    if (!room || sheet.hidden) return;
+    if (sheet.hidden) return;
+
+    const mine = localPetCard();
+    lobby.hidden = !!room;
+    inRoom.hidden = !room;
+    title.textContent = room ? `Room ${room.code.toUpperCase()}` : "Play together";
+    if (!room) {
+      shownFor = null;
+      bringing.replaceChildren();
+      if (mine) bringing.append("You'll bring ", el("strong", "", `${petEmoji(mine)} ${petName(mine)}`), ".");
+      else bringing.append("Create a pet first so friends can see it.");
+      bringing.classList.toggle("net-warn", !mine);
+      return;
+    }
 
     if (shownFor !== room) {
       shownFor = room;
@@ -78,25 +165,33 @@ export function mountRoomUI(actions: HTMLElement): void {
       qr.innerHTML = renderSVG(url, { ecc: "M", border: 2 }); // our own URL, not user input
       link.href = url;
       link.textContent = url.replace(/^https?:\/\//, "");
-      code.textContent = `Room ${room.code.toUpperCase()}`;
+      code.textContent = room.code.toUpperCase();
+      code.setAttribute("aria-label", `Room code ${room.code.toUpperCase().split("").join(" ")}`);
     }
     status.textContent =
       room.status === "open"
         ? "Connected"
         : room.status === "full"
-          ? `This room is full (${MAX_PLAYERS} players). Leave and start a new one.`
-          : room.status === "closed"
-            ? "Left the room"
-            : "Connecting…";
+          ? `This room is full (${MAX_PLAYERS} players).`
+          : room.status === "reconnecting"
+            ? "Reconnecting…"
+            : room.status === "closed"
+              ? "Left the room"
+              : "Connecting…";
     status.dataset.state = room.status;
+    retry.hidden = room.status !== "full";
+    const full = room.status === "full";
+    qr.hidden = code.hidden = linkRow.hidden = lead.hidden = full;
     listTitle.textContent = `In this room (${count}/${MAX_PLAYERS})`;
     const now = performance.now();
-    const rows: HTMLElement[] = [row(`${petEmoji(localPetCard())} ${petName(localPetCard())}`, "you")];
+    const rows: HTMLElement[] = [row(`${petEmoji(mine)} ${petName(mine)}`, "you")];
     for (const peer of room.peers.values()) {
       const playing = now - peer.lastStateMs < PLAYING_MS;
       rows.push(row(`${petEmoji(peer.pet)} ${petName(peer.pet)}`, playing ? "playing" : "getting ready"));
     }
     list.replaceChildren(...rows);
+    listTitle.hidden = list.hidden = full;
+    empty.hidden = full || room.peers.size > 0 || room.status !== "open";
   }
 
   function watch(room: RoomClient | null) {
@@ -105,10 +200,12 @@ export function mountRoomUI(actions: HTMLElement): void {
     render();
   }
 
+  let opener: HTMLElement | null = null;
   function open() {
-    if (!currentRoom()) joinRoom(newRoomCode());
+    opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     sheet.hidden = false;
     shownFor = null;
+    setJoinError(null);
     render();
     clearInterval(tick);
     tick = setInterval(render, 1000); // "playing" fades without a roster change
@@ -118,6 +215,15 @@ export function mountRoomUI(actions: HTMLElement): void {
   function hide() {
     sheet.hidden = true;
     clearInterval(tick);
+    opener?.focus();
+    opener = null;
+  }
+
+  function join(roomCode: string) {
+    joinRoom(roomCode); // onRoomChange → watch → render shows the room view
+    codeInput.value = "";
+    setJoinError(null);
+    close.focus();
   }
 
   button.addEventListener("click", open);
@@ -128,6 +234,21 @@ export function mountRoomUI(actions: HTMLElement): void {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && !sheet.hidden) hide();
   });
+  joinForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    const roomCode = parseRoomInput(codeInput.value);
+    if (!roomCode) {
+      setJoinError(codeInput.value.trim() ? "That doesn't look like a room code. Check it and try again." : "Type the room code first.");
+      codeInput.focus();
+      return;
+    }
+    codeInput.blur(); // close the phone keyboard
+    join(roomCode);
+  });
+  codeInput.addEventListener("input", () => {
+    if (codeInput.getAttribute("aria-invalid") === "true") setJoinError(null);
+  });
+  hostBtn.addEventListener("click", () => join(newRoomCode()));
   copy.addEventListener("click", async () => {
     const room = currentRoom();
     if (!room) return;
@@ -139,9 +260,25 @@ export function mountRoomUI(actions: HTMLElement): void {
     }
     setTimeout(() => (copy.textContent = "Copy link"), 1500);
   });
+  share.addEventListener("click", async () => {
+    const room = currentRoom();
+    if (!room) return;
+    try {
+      await navigator.share({ title: "AR Pets", text: `Bring your pet to my room: ${room.code.toUpperCase()}`, url: inviteURL(room.code) });
+    } catch {
+      /* cancelled */
+    }
+  });
   leave.addEventListener("click", () => {
+    leaveRoom(); // back to the lobby, sheet stays open
+    hostBtn.focus();
+  });
+  retry.addEventListener("click", () => {
     leaveRoom();
-    hide();
+    codeInput.focus();
+  });
+  petStore.subscribe(() => {
+    if (!sheet.hidden) render();
   });
 
   onRoomChange(watch);

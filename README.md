@@ -11,6 +11,8 @@ The start screen shows a **My pets** menu with **3 slots** in a panel (a bottom 
 - **Empty slot → + Create**: pick the kind of animal (**Dog 🐕** or **Cat 🐈**), and you go straight into the creator for your new pet.
 - **Filled slot**: tap it to select it (the preview shows it, and **Deploy** deploys it), then **Customise** to open the creator or **Delete** (asks to confirm first).
 - **← My pets** in the creator goes back to the menu.
+- **Drag the panel** (phones held upright): grab the bar at the top of the sheet, or the title, and drag it up to see many settings at once or down to see more of your pet. It snaps to three heights (small, half, nearly full screen) and a quick flick jumps to the next one. Tapping the bar switches between half and full. Below full height, dragging up anywhere on the settings grows the sheet; at full height the settings scroll as usual, and pulling down from the top shrinks it again. The height you pick is remembered.
+- **Section tabs** in the creator (Breed, Body, Coat, Face, Tail, Collar) stay pinned under the name: tap one to jump to that section; the tab for the section you're looking at lights up as you scroll.
 - Your pets, and which one was selected, are saved in the browser (`localStorage`, not cookies: there's no 4 KB limit and nothing is sent to a server), so the slots fill back in when you come back. They live in this browser on this device only; clearing site data deletes them. A dog saved by the older single-dog version is moved into slot 1.
 
 ### Dog creator
@@ -87,7 +89,10 @@ The **dog** and the **cat** share the same play modes; the buttons change to sui
 
 Every phone brings its own pet to the party, and everyone sees everyone's pets.
 
-- On the start screen, tap **👥 Friends**: it opens a room and shows a **QR code**, the room code and a link (big enough to show on a projector from a laptop). Friends scan it with the phone camera, make their dog (a first-time guest starts with a random one, so the room isn't full of identical labradors) and **Deploy**. The button shows how many are in the room ("👥 3 here").
+- On the start screen, tap **👥 Friends** to open **Play together**. It shows which pet you'll bring, and two ways in:
+  - **Join a friend**: type the 4-letter room code from their screen (or paste their invite link) and tap **Join**.
+  - **Start a new room**: shows a **QR code**, the room code and a link with **Copy link** / **Share…** (big enough to show on a projector from a laptop). Friends scan it with the phone camera or type the code.
+  Then everyone makes their pet (a first-time guest who opens an invite link starts with a random dog, so the room isn't full of identical labradors) and taps **Deploy**. The sheet lists who is in the room and whether they're playing yet; **Leave room** goes back to Join / Start. The button shows how many are in the room ("👥 3 here").
 - In AR / camera mode, friends' pets stand around yours with their name above them, doing exactly what they do on their owner's phone: walking, sitting, tricks, being petted.
 - **Pet a friend's pet** with your hand: it leans in here, on its owner's phone and on everyone else's, and the owner sees "💕 …'s human is petting …".
 - **Pets meet each other.** Now and then an idle pet (following or roaming) walks over to a friend's pet to say hi, and **🐾** sends yours right away (to the friend's pet it met least recently). The two walk up nose to nose, sniff, then each does a trick that suits the other: two dogs spin and jump, a dog and a cat jump and pounce, two cats stretch and groom. A pet that is sitting or lying stays put and the other one comes to it. Every phone shows the meeting from where the pets stand on that phone.
@@ -228,7 +233,8 @@ It prints the address, e.g. `https://hw13-pets.<your-subdomain>.workers.dev`. Op
 | `src/main.ts` | Detects the device and picks WebXR, camera mode or the creator alone; switches the panel between the menu and the creator; shows the centered "Checking AR support…" screen until it knows |
 | `src/pets.ts` | The 3 pet slots (`petStore`): species list, create / delete / select, the active pet, saved in `localStorage` |
 | `src/menu.ts` | The "My pets" menu: slot cards, species picker, select / customise / delete with confirm |
-| `src/creator.ts` | The character creator panel for the active pet (dog or cat controls from shared building blocks), bound to `petStore` |
+| `src/creator.ts` | The character creator panel for the active pet (dog or cat controls from shared building blocks), bound to `petStore`; sticky name bar with section tabs |
+| `src/sheet.ts` | The start panel as a draggable bottom sheet on upright phones (grip / header / touch drags, three snap heights, remembered) |
 | `src/preview.ts` | The orbitable 3D preview of the active pet, rebuilt on every change and framed beside / above the panel |
 | `src/dog/types.ts` | The dog contracts: `DogConfig`, breed presets, `DogControls` (what the brain tells the model), `DogCharacter`, `DogBrain`, commands and modes |
 | `src/dog/config.ts` | Breed presets, defaults, the dice (`randomDogConfig`), and validation (saving lives in `src/pets.ts`) |
@@ -258,7 +264,7 @@ It prints the address, e.g. `https://hw13-pets.<your-subdomain>.workers.dev`. Op
 | `src/net/remotePet.ts` | A friend's pet on this phone: built from their pet card, posed from their states (smoothed), name tag and shadow |
 | `src/net/party.ts` | Multiplayer inside one AR / camera session: sends this pet, places friends' pets, petting them, pets meeting each other, the feed and 🐾 |
 | `src/net/kinds.ts` | The pet card this phone sends (its active dog or cat), building a friend's dog or cat from theirs, names, emoji, petting haptics |
-| `src/net/ui.ts`, `src/net/net.css` | The 👥 button, the invite sheet with the QR code, the feed chips, the 🐾 button |
+| `src/net/ui.ts`, `src/net/net.css` | The 👥 button, the Play together sheet (join by code / link, or start a room with QR code and roster), the feed chips, the 🐾 button |
 | `worker/index.ts` | The Cloudflare Worker: serves `dist/`, and a `Room` Durable Object per room code relays messages between its phones |
 | `wrangler.jsonc` | Cloudflare config: Worker name (`hw13-pets`), static files, the `Room` Durable Object |
 | `scripts/fake-friend.mjs` | A scripted friend (Mochi the corgi) for trying multiplayer without a second phone |
