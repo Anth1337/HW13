@@ -6,8 +6,8 @@ import { petStore, type Species } from "./pets";
 
 /*
  * The character creator: fills #creator with labelled controls for the active pet (petStore),
- * using the controls for its species. A sticky bar holds the name, 🎲 and a row of section tabs
- * (Breed, Body, Coat…) that jump to a section and follow the scroll position, so getting to a
+ * using the controls for its species. Under the name and 🎲, a sticky row of section tabs
+ * (Breed, Body, Coat…) jumps to a section and follows the scroll position, so getting to a
  * setting never takes more than a tap. Discrete choices (breed, sex, chips, toggles) commit at
  * once; slider / colour drags and name typing are debounced (~80 ms) so the preview isn't
  * rebuilt on every input event. Mounted for one pet: main.ts destroys + remounts it when the
@@ -265,14 +265,15 @@ function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: Spe
 
   /** Section tabs, filled in once every section exists (see the end of build). */
   const nav = el("nav", { class: "cr-nav", "aria-label": "Jump to a section" });
-  const bar = el("div", { class: "cr-sticky" }, [
+  root.append(
     el("div", { class: "cr-top" }, [
       el("div", { class: "cr-name-wrap" }, [el("label", { for: nameId, class: "cr-label", text: "Name" }), nameInput]),
       dice,
     ]),
     nav,
-  ]);
-  root.append(bar);
+  );
+  /** The sticky part: only the tabs, so it stays short in a half-height sheet. */
+  const bar = nav;
 
   /* ---- Building blocks ---- */
   const sections: { title: string; el: HTMLElement }[] = [];
@@ -472,13 +473,22 @@ function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: Spe
   const tabs = sections.map(({ title, el: s }) => {
     const b = el("button", { type: "button", class: "cr-tab", text: title });
     b.addEventListener("click", () => {
-      container.scrollTo({ top: Math.max(0, sectionTop(s) + 1), behavior: reduceMotion.matches ? "auto" : "smooth" });
       setCurrent(s);
+      // Keep the tapped tab lit while the scroll it started runs (scrollend, or a timeout where
+      // Safari lacks it); any touch / wheel / key on the content hands control back to tracking.
+      clearTimeout(jumping);
+      jumping = window.setTimeout(() => (jumping = 0), 900);
+      container.scrollTo({ top: Math.max(0, sectionTop(s) + 1), behavior: reduceMotion.matches ? "auto" : "smooth" });
     });
     nav.append(b);
     return { b, s };
   });
   let current: HTMLElement | null = null;
+  let jumping = 0;
+  const endJump = () => {
+    clearTimeout(jumping);
+    jumping = 0;
+  };
   function setCurrent(s: HTMLElement) {
     if (s === current) return;
     current = s;
@@ -493,7 +503,7 @@ function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: Spe
   }
   /** The last section whose top has reached the bar (the last one once scrolled to the end). */
   const trackScroll = () => {
-    if (!tabs.length || container.clientHeight === 0) return;
+    if (!tabs.length || container.clientHeight === 0 || jumping) return;
     if (container.scrollTop + container.clientHeight >= container.scrollHeight - 2) return setCurrent(tabs[tabs.length - 1].s);
     let on = tabs[0].s;
     for (const t of tabs) if (sectionTop(t.s) <= container.scrollTop + 8) on = t.s;
@@ -503,10 +513,36 @@ function build<C extends BaseConfig>(container: HTMLElement, initial: C, ui: Spe
   const onScroll = () => {
     if (!scrollFrame) scrollFrame = requestAnimationFrame(() => ((scrollFrame = 0), trackScroll()));
   };
+  const onScrollEnd = () => {
+    if (!jumping) return;
+    endJump();
+    trackScroll();
+  };
+  const userScroll = ["wheel", "touchstart", "keydown"] as const;
   container.addEventListener("scroll", onScroll, { passive: true });
+  container.addEventListener("scrollend", onScrollEnd);
+  for (const t of userScroll) container.addEventListener(t, endJump, { passive: true });
+
+  // Room below the last section so every section can scroll up to the tabs (else tapping a
+  // late tab could never reach it); the same measure gives focus a clear top edge.
+  const lastSection = sections[sections.length - 1]?.el;
+  const fitSpace = () => {
+    if (!lastSection || container.clientHeight === 0) return;
+    root.style.paddingBottom = `${Math.max(12, container.clientHeight - bar.offsetHeight - lastSection.offsetHeight)}px`;
+    container.style.scrollPaddingTop = `${bar.offsetHeight + 8}px`;
+  };
+  const ro = new ResizeObserver(fitSpace);
+  ro.observe(container);
+  ro.observe(bar);
+  if (lastSection) ro.observe(lastSection);
   cleanups.push(() => {
+    ro.disconnect();
     container.removeEventListener("scroll", onScroll);
+    container.removeEventListener("scrollend", onScrollEnd);
+    for (const t of userScroll) container.removeEventListener(t, endJump);
     cancelAnimationFrame(scrollFrame);
+    endJump();
+    container.style.scrollPaddingTop = "";
   });
 
   container.replaceChildren(root);

@@ -1,6 +1,6 @@
 import { renderSVG } from "uqr";
 import "./net.css";
-import { currentRoom, inviteURL, joinRoom, leaveRoom, newRoomCode, onRoomChange } from "./index";
+import { currentRoom, ensureGuestPet, inviteURL, joinRoom, leaveRoom, newRoomCode, onRoomChange } from "./index";
 import { localPetCard, petEmoji, petName } from "./kinds";
 import { petStore } from "../pets";
 import { MAX_PLAYERS, ROOM_CODE_RE } from "./protocol";
@@ -26,14 +26,15 @@ const PLAYING_MS = 3000;
 export function parseRoomInput(raw: string): string | null {
   let text = raw.trim();
   if (!text) return null;
-  if (/room=/i.test(text) || /^https?:\/\//i.test(text)) {
-    try {
-      text = new URL(text, location.href).searchParams.get("room") ?? "";
-    } catch {
-      return null;
-    }
+  if (/room=|^https?:\/\//i.test(text)) {
+    // Only the code token: text pasted along with the link must not become part of it.
+    const m = /[?&]room=([a-z0-9_-]+)/i.exec(text);
+    if (!m) return null;
+    text = m[1];
+  } else {
+    text = text.replace(/\s+/g, ""); // " ab cd " typed with spaces
   }
-  const code = text.replace(/\s+/g, "").toLowerCase();
+  const code = text.toLowerCase();
   return ROOM_CODE_RE.test(code) ? code : null;
 }
 
@@ -81,6 +82,7 @@ export function mountRoomUI(actions: HTMLElement): void {
   joinRow.append(codeInput, joinBtn);
   const joinHelp = el("p", "net-help", "The 4-letter code on your friend's screen, or paste their invite link.");
   joinHelp.id = "net-join-help";
+  joinHelp.setAttribute("aria-live", "polite"); // the error replaces this text
   joinForm.append(joinLabel, joinRow, joinHelp);
   const or = el("div", "net-or");
   or.append(el("span", "", "or"));
@@ -220,6 +222,7 @@ export function mountRoomUI(actions: HTMLElement): void {
   }
 
   function join(roomCode: string) {
+    ensureGuestPet(); // friends should see a pet, not nothing
     joinRoom(roomCode); // onRoomChange → watch → render shows the room view
     codeInput.value = "";
     setJoinError(null);

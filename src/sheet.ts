@@ -173,10 +173,12 @@ export function mountSheet(home: HTMLElement, grip: HTMLButtonElement, scrollers
     const d = drag;
     drag = null;
     if (!d.moved) return false;
-    const first = d.samples[0];
+    // Velocity over the last 100 ms before the release; zero if the finger rested before lifting.
+    const now = performance.now();
     const last = d.samples[d.samples.length - 1];
-    const dt = last.t - first.t;
-    const v = dt > 0 ? -(last.y - first.y) / dt : 0; // px/ms, positive = growing
+    const recent = d.samples.filter((x) => now - x.t <= 100);
+    const first = recent[0];
+    const v = now - last.t > 60 || recent.length < 2 ? 0 : -(last.y - first.y) / Math.max(1, last.t - first.t); // px/ms, positive = growing
     settle(height, v);
     swallowClickUntil = performance.now() + 400;
     return true;
@@ -188,6 +190,9 @@ export function mountSheet(home: HTMLElement, grip: HTMLButtonElement, scrollers
     if (moved) settle(height, 0);
   }
 
+  // The click a drag can produce always comes before the next press; a touch drag usually
+  // produces none, so a new press disarms the swallow (else it would eat a quick real tap).
+  window.addEventListener("pointerdown", () => (swallowClickUntil = 0), true);
   window.addEventListener(
     "click",
     (e) => {
@@ -205,7 +210,7 @@ export function mountSheet(home: HTMLElement, grip: HTMLButtonElement, scrollers
   const handles = [grip, head].filter((x): x is HTMLElement => !!x);
   for (const h of handles) {
     h.addEventListener("pointerdown", (e) => {
-      if (!active || pointerId !== null || (e.pointerType === "mouse" && e.button !== 0)) return;
+      if (!active || pointerId !== null || drag || (e.pointerType === "mouse" && e.button !== 0)) return;
       pointerId = e.pointerId;
       h.setPointerCapture(e.pointerId);
       dragStart(e.clientY);
@@ -242,10 +247,12 @@ export function mountSheet(home: HTMLElement, grip: HTMLButtonElement, scrollers
   // Below full (.sheet-locked: touch-action pan-x), vertical touch drags don't scroll, so they
   // arrive as pointer events and move the sheet. Horizontal ones pan natively (pointercancel).
   let contentPointer: number | null = null;
-  const skip = (t: EventTarget | null) => t instanceof Element && !!t.closest('input[type="range"], .cr-scroll');
+  // Sliders keep their own drags. Horizontal rows (breeds, tabs) needn't be skipped: under pan-x a
+  // sideways swipe pans them natively (pointercancel), a vertical one arrives here.
+  const skip = (t: EventTarget | null) => t instanceof Element && !!t.closest('input[type="range"]');
   for (const sc of scrollers) {
     sc.addEventListener("pointerdown", (e) => {
-      if (!active || snap === "full" || e.pointerType !== "touch" || contentPointer !== null || drag || skip(e.target)) return;
+      if (!active || snap === "full" || e.pointerType === "mouse" || contentPointer !== null || drag || skip(e.target)) return;
       contentPointer = e.pointerId;
       dragStart(e.clientY);
     });
@@ -288,7 +295,8 @@ export function mountSheet(home: HTMLElement, grip: HTMLButtonElement, scrollers
             if (Math.abs(dx) + Math.abs(dy) > 2) pull = null;
             return;
           }
-          e.preventDefault(); // tentatively ours, so the browser doesn't start an overscroll
+          // Not prevented until decided (a prevented first move can cancel the scroll on iOS);
+          // overscroll-behavior: contain keeps those few pixels from moving the page.
           if (dy < SLOP) return;
           pull.claimed = true;
           dragStart(pull.y);

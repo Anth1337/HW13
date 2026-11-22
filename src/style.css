@@ -423,17 +423,6 @@ body {
   padding: 0 16px 12px;
 }
 
-/* Name + dice, and the section tabs under them: stuck to the top of the scrolling creator. */
-.cr-sticky {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  margin: 0 -16px;
-  padding: 0 16px;
-  background: var(--panel);
-  box-shadow: 0 6px 8px -8px rgba(0, 0, 0, 0.6);
-}
-
 .cr-top {
   display: flex;
   align-items: flex-end;
@@ -441,13 +430,19 @@ body {
   padding: 4px 0 8px;
 }
 
+/* Section tabs: stuck to the top of the scrolling creator. */
 .cr-nav {
+  position: sticky;
+  top: 0;
+  z-index: 1;
   display: flex;
   gap: 4px;
   overflow-x: auto;
   scrollbar-width: none;
   margin: 0 -16px;
-  padding: 0 16px 8px;
+  padding: 4px 16px 6px;
+  background: var(--panel);
+  box-shadow: 0 6px 8px -8px rgba(0, 0, 0, 0.6);
 }
 
 .cr-nav::-webkit-scrollbar {
