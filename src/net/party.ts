@@ -6,7 +6,7 @@ import { createPetModel, localPetCard, petBuzz, petName } from "./kinds";
 import { RemotePet, type MeetPose, type Stage } from "./remotePet";
 import type { Peer } from "./room";
 import { PET_REPEAT_MS, readEvent, readState, wrapAngle, writeState, type PetEvent } from "./sync";
-import { clearFeed, feed, partyButton, sayHiButton } from "./ui";
+import { clearFeed, feed, sayHiButton } from "./ui";
 
 /*
  * Multiplayer inside one AR / camera session (dogPlay.ts creates it when the page is in a room):
@@ -15,8 +15,7 @@ import { clearFeed, feed, partyButton, sayHiButton } from "./ui";
  *  - shows friends' pets standing around this phone's pet (remotePet.ts)
  *  - a hand on a friend's pet makes it lean in here, on its owner's phone and on everyone
  *    else's; a friend's hand on this phone's pet does the same here
- *  - the feed (who joined, petting, tricks) and the 🎉 button: every pet in the room does the
- *    same trick at once
+ *  - the feed (who joined, petting, tricks)
  *  - pets meeting each other (a "meet" event, started by an idle pet now and then or the 🐾
  *    button): the two walk up nose to nose, sniff, then each does a trick that suits the other's
  *    species. Every phone plays it from its own layout (friends' pets stand in different spots on
@@ -38,10 +37,8 @@ export interface PartyLink {
 export interface PartyHooks {
   /** Hearts at a world point. */
   burst(point: THREE.Vector3, zone: "head" | "body"): void;
-  /** Run a command on this phone's pet (someone's party trick, maybe another species' trick). */
+  /** Run a command on this phone's pet (sent to it by a friend, maybe another species' trick). */
   command(cmd: DogCommand): void;
-  /** This phone's pet's three tricks (the 🎉 button picks one). */
-  tricks: readonly TrickKind[];
   /** This phone's pet meets another pet (null = done). */
   social(s: PetSocial | null): void;
   /** This phone's pet is idle enough to go and say hi by itself. */
@@ -53,7 +50,6 @@ const SEND_EVERY_MS = 100;
 const STALE_MS = 2500;
 /** The pet moved further than this in one frame: it was re-placed, and the party moves with it. */
 const TELEPORT_M = 0.35;
-const PARTY_COOLDOWN_MS = 1500;
 /** Hand on a friend's pet: same feel as the brain's petting (dwell before it counts, release after). */
 const TOUCH_DWELL_S = 0.2;
 const TOUCH_RELEASE_S = 0.5;
@@ -128,7 +124,6 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   let pettedBodyUntil = -Infinity;
   let pettedHead = 0;
   let pettedBody = 0;
-  let lastPartyMs = -Infinity;
   let connectionLost = false;
   let disposed = false;
   const zones: PetZones = { head: new THREE.Sphere(), body: new THREE.Sphere() };
@@ -178,10 +173,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   function onEvent(from: Peer, e: PetEvent) {
     const now = performance.now();
     if (e.k === "cmd") {
-      if (e.to === "*") {
-        hooks.command(e.c);
-        feed(`🎉 ${ownerOf(from)}: everyone ${label(e.c)}!`);
-      } else if (e.to !== undefined && e.to === room.selfId) {
+      if (e.to !== undefined && e.to === room.selfId) {
         hooks.command(e.c);
         feed(`${ownerOf(from)} told ${myName()} to ${label(e.c)}`);
       } else if (e.to === undefined && SHOWN_COMMANDS[e.c] && pets.get(from.id)?.anchor.visible) {
@@ -391,18 +383,6 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
     }),
   );
 
-  const party = partyButton(() => {
-    const now = performance.now();
-    if (!dog || now - lastPartyMs < PARTY_COOLDOWN_MS) return;
-    lastPartyMs = now;
-    const trick = hooks.tricks[Math.floor(Math.random() * hooks.tricks.length)];
-    hooks.command(trick);
-    room.sendEvent({ k: "cmd", c: trick, to: "*" } satisfies PetEvent);
-    feed(room.peers.size ? `🎉 Everyone: ${TRICK_LABEL[trick].toLowerCase()}!` : "🎉 Invite friends so their pets join in");
-    navigator.vibrate?.(20);
-  });
-  if (party) party.el.disabled = true;
-
   const hi = sayHiButton(() => {
     const me = self();
     if (!dog) return;
@@ -482,7 +462,6 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       dog = newDog;
       anchor = newAnchor;
       stage = null;
-      if (party) party.el.disabled = false;
       if (hi) hi.el.disabled = false;
     },
 
@@ -553,7 +532,6 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       meets.length = 0;
       if (socialOn) hooks.social(null);
       socialOn = false;
-      party?.remove();
       hi?.remove();
       clearFeed();
       dog = null;

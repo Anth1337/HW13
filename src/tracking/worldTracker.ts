@@ -21,7 +21,7 @@ import { VideoSyncCalibrator } from "./videoSync";
  *  - Display sync: the video element shows a frame that is already `latency` old. getDisplayPose
  *    returns the pose AT THAT FRAME's capture time (rotation from the gyro history, position
  *    interpolated between filtered odometry samples), so virtual content and the image agree on
- *    every turn instead of the dog leading the room. This is how ARKit / ARCore render too.
+ *    every turn instead of the dog leading the room. This is how native AR frameworks render too.
  *  - The FOV (setFov / WorldTrackerOptions) is a starting value; the measured focal length
  *    replaces it once there has been enough rotation (fovLongSideDeg reports the current value).
  *  - Camera height is the constructor value; no estimation (see README note): an error in it is

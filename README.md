@@ -39,18 +39,18 @@ Every change shows up on the pet straight away and is saved.
 | Phone | What you get |
 |---|---|
 | **Android** (Chrome) | Full AR in the browser (WebXR). **Deploy** starts the camera: scan the floor, a ring shows the surface, tap to place your dog there at real size (with a shadow). |
-| **iPhone / iPad** (Safari) | iOS Safari has no WebXR, so **Deploy** builds its own world tracking (see "iOS" below): the same flow as Android, scan the floor, tap to place the dog at real size, it stays put in the room as you move. **Quick Look (still model)** is the secondary button: Apple's **AR Quick Look** with your custom dog as a still model (no animation or commands). |
+| **iPhone / iPad** (Safari) | iOS Safari has no WebXR, so **Deploy** builds its own world tracking (see "iOS" below): the same flow as Android, scan the floor, tap to place the dog at real size, it stays put in the room as you move. |
 | **Computer** | The creator and preview; **Deploy** opens camera mode with a webcam. |
 
 ## iOS (iPhone / iPad): how it works
 
-Apple does not give web pages ARKit, so **Deploy** on iOS runs our own tracker (`src/tracking/`) over the live camera:
+iOS Safari has no WebXR, so **Deploy** on iOS runs our own tracker (`src/tracking/`) over the live camera:
 
 - **Rotation** from the phone's gyro + gravity (DeviceOrientation / DeviceMotion).
 - **Position** from visual odometry on the **floor plane**: features on the floor are tracked in the (small, rotation-compensated) camera image and solved for metric translation using an **assumed camera height** (about 1.3 m). Accelerometer / zero-velocity damping covers moments with nothing to track.
 - **Video sync:** the camera image on screen is already 60–150 ms old (it varies by phone), while the gyro is current. The tracker measures that delay continuously by matching how far the image shifts against how far the gyro says the phone turned (`src/tracking/videoSync.ts`), and the 3D camera is rendered with the pose of the frame that is actually on screen (`getDisplayPose`), so the pet stays locked to the room when you turn instead of swimming ahead of it. The same measurement gives the odometry the right instant for each frame, which cuts the false drift turning causes. It also measures the lens field of view, which replaces the assumed ~65° only when the stream is clearly different (more than 10% off, e.g. a cropped or zoomed camera). In simulation (a phone looking around at a textured floor, 50–72° lenses, 70–140 ms camera delay) this cut the misalignment while turning from about 20–35 px to about 5 px on a phone screen, and the drift while turning in place by up to half.
 - The dog is placed on the floor plane (tap, as on Android), kept world-anchored, and you tap the floor to send it, long-press to re-place it.
-- Tip shown before Deploy: hold the phone at chest height, point it at the floor and walk slowly.
+- Tip shown before Deploy: point the phone at the floor and walk slowly.
 
 Honest limits (nobody has verified this on a real iPhone yet):
 
@@ -62,8 +62,7 @@ Honest limits (nobody has verified this on a real iPhone yet):
 
 ### Can a web page get native AR on iOS Safari? (checked 2026-11-21)
 
-- **WebXR `immersive-ar` on iPhone / iPad Safari: no.** Several 2026 web sources (not Apple primary docs, so treat as secondary) say iOS Safari has no `immersive-ar`/`immersive-vr` and no ARKit access; we also feature-detect at runtime, so if Apple ships it the Android WebXR path is used automatically. visionOS Safari has WebXR (VR; `immersive-ar` support reported inconsistently), not relevant for phones. No experimental flag for iOS `immersive-ar` was found (from memory, unverified: the flag list has WebXR Device API entries that expose nothing on iPhone).
-- **AR Quick Look** (`<a rel="ar">` + USDZ) is native ARKit but a closed viewer: Apple's page-level customisation is limited to a custom banner / call-to-action; USDZ behaviours (Reality Composer tap actions) are from memory and cannot do our procedural dog, voice or vision. Hence it is only the still-model option.
+- **WebXR `immersive-ar` on iPhone / iPad Safari: no.** Several 2026 web sources (not Apple primary docs, so treat as secondary) say iOS Safari has no `immersive-ar`/`immersive-vr` and no native AR access; we also feature-detect at runtime, so if Apple ships it the Android WebXR path is used automatically. visionOS Safari has WebXR (VR; `immersive-ar` support reported inconsistently), not relevant for phones. No experimental flag for iOS `immersive-ar` was found (from memory, unverified: the flag list has WebXR Device API entries that expose nothing on iPhone).
 - **WebAR SDKs with SLAM:** 8th Wall's hosted services were shut down by Niantic; the engine went open source at 8thwall.org (transition complete 2026-02-28, hosted projects live until 2027-02-28), but its core tracking is a proprietary binary and not open source (per Niantic Spatial's blog). Zappar (Mattercraft / Universal AR), Variant Launch: commercial / licensed, from memory, not checked here. MindAR is open source (MIT) but does image and face tracking, not world SLAM (from memory). We build our own instead.
 
 ## 3. Play
@@ -81,7 +80,8 @@ The **dog** and the **cat** share the same play modes; the buttons change to sui
 - **Several people**: the dog tells people apart and keeps them straight (see below).
 - **Friends' pets**: several phones in one room, each with its own pet (see below).
 - **Eye contact**: someone looking at the dog gets looked back at (one person at a time, and it doesn't flip-flop between two lookers).
-- **👁** draws what the computer vision sees (hands, bodies, faces, person ids, who is speaking, depth / mask state) on top of the camera. **✕** goes back to the creator.
+- **Screen layout**: commands (top row) and tricks (bottom row) sit at the bottom of the screen; **✕** (top-left) goes back to the creator; the small tools are stacked top-right: **🐾** (in a room), **🎤** and **👁**.
+- **👁** draws what the computer vision sees (hands, bodies, faces, person ids, who is speaking, depth / mask state) on top of the camera.
 
 ### Play together (multiplayer)
 
@@ -90,7 +90,6 @@ Every phone brings its own pet to the party, and everyone sees everyone's pets.
 - On the start screen, tap **👥 Friends**: it opens a room and shows a **QR code**, the room code and a link (big enough to show on a projector from a laptop). Friends scan it with the phone camera, make their dog (a first-time guest starts with a random one, so the room isn't full of identical labradors) and **Deploy**. The button shows how many are in the room ("👥 3 here").
 - In AR / camera mode, friends' pets stand around yours with their name above them, doing exactly what they do on their owner's phone: walking, sitting, tricks, being petted.
 - **Pet a friend's pet** with your hand: it leans in here, on its owner's phone and on everyone else's, and the owner sees "💕 …'s human is petting …".
-- **🎉** makes every pet in the room do the same random trick at once.
 - **Pets meet each other.** Now and then an idle pet (following or roaming) walks over to a friend's pet to say hi, and **🐾** sends yours right away (to the friend's pet it met least recently). The two walk up nose to nose, sniff, then each does a trick that suits the other: two dogs spin and jump, a dog and a cat jump and pounce, two cats stretch and groom. A pet that is sitting or lying stays put and the other one comes to it. Every phone shows the meeting from where the pets stand on that phone.
 - A feed under the hint says who joined or left, who is petting whom and which tricks friends asked for.
 - Up to 8 phones per room. A phone that loses the connection reconnects on its own (a 📡 chip says so); meanwhile friends' pets disappear and then come back.
@@ -218,15 +217,15 @@ It prints the address, e.g. `https://hw13-pets.<your-subdomain>.workers.dev`. Op
 - **Android**: Chrome with **Google Play Services for AR** (ARCore). Chrome offers to install it if it's missing.
   - For the dog to **see your hand**, Chrome must share the camera image with the page (**WebXR Raw Camera Access, Chrome 107+**). If it doesn't, the status line says so; placing the dog, commands, following and tricks still work. If your Chrome doesn't offer it, try enabling **WebXR Incubations** in `chrome://flags`.
   - **Depth sensing** (ARCore Depth API) is optional; it makes hand distances (petting, hiding the dog behind your hand) more accurate.
-- **iPhone**: **Safari**, iOS 14.5+, HTTPS, Motion & Orientation access allowed. Quick Look needs iOS 12+.
+- **iPhone**: **Safari**, iOS 14.5+, HTTPS, Motion & Orientation access allowed.
 - **Computer**: any modern browser with a webcam, for camera mode (over HTTPS or localhost).
 
 ## Files
 
 | File | What it does |
 |---|---|
-| `index.html` | Page layout: start screen (title, status, My pets menu, back button, creator panel, Deploy / Quick Look), the camera-mode video, and the AR overlay (hint, status, command / trick buttons, vision toggle, exit, vision canvas) |
-| `src/main.ts` | Detects the device and picks WebXR, camera mode (+ Quick Look on iOS) or the creator alone; switches the panel between the menu and the creator; shows the centered "Checking AR support…" screen until it knows |
+| `index.html` | Page layout: start screen (title, status, My pets menu, back button, creator panel, Deploy), the camera-mode video, and the AR overlay (hint and status chips at the top, Exit top-left, voice / vision / say-hi tools top-right, command and trick rows docked at the bottom, vision canvas) |
+| `src/main.ts` | Detects the device and picks WebXR, camera mode or the creator alone; switches the panel between the menu and the creator; shows the centered "Checking AR support…" screen until it knows |
 | `src/pets.ts` | The 3 pet slots (`petStore`): species list, create / delete / select, the active pet, saved in `localStorage` |
 | `src/menu.ts` | The "My pets" menu: slot cards, species picker, select / customise / delete with confirm |
 | `src/creator.ts` | The character creator panel for the active pet (dog or cat controls from shared building blocks), bound to `petStore` |
@@ -251,16 +250,15 @@ It prints the address, e.g. `https://hw13-pets.<your-subdomain>.workers.dev`. Op
 | `src/vision/xrCamera.ts` | WebXR camera image and (cpu) depth map reader |
 | `src/voice/commands.ts` | Pure parser: transcript to dog command (phrases, filler, false-positive guards) |
 | `src/voice/listener.ts` | Web Speech API wrapper: auto-restart, permission / unsupported states |
-| `src/quicklook.ts` | iPhone secondary option ("Quick Look (still model)"): exports the current dog to `.usdz` in the browser (re-exported when it changes) for AR Quick Look |
 | `src/shadow.ts` | The invisible shadow-catcher plane under the dog |
 | `src/net/protocol.ts` | The room messages, shared by the app and the Worker |
 | `src/net/room.ts` | One phone's connection to a room: roster, reconnects, pings |
 | `src/net/index.ts` | The page's room: `?room=` links, invite URL, room codes, a random dog in slot 1 for first-time guests |
-| `src/net/sync.ts` | The pet state sent about 10 times a second and the events (commands, petting, party trick, pets meeting), checked on arrival |
+| `src/net/sync.ts` | The pet state sent about 10 times a second and the events (commands, petting, pets meeting), checked on arrival |
 | `src/net/remotePet.ts` | A friend's pet on this phone: built from their pet card, posed from their states (smoothed), name tag and shadow |
-| `src/net/party.ts` | Multiplayer inside one AR / camera session: sends this pet, places friends' pets, petting them, pets meeting each other, the feed, 🎉 and 🐾 |
+| `src/net/party.ts` | Multiplayer inside one AR / camera session: sends this pet, places friends' pets, petting them, pets meeting each other, the feed and 🐾 |
 | `src/net/kinds.ts` | The pet card this phone sends (its active dog or cat), building a friend's dog or cat from theirs, names, emoji, petting haptics |
-| `src/net/ui.ts`, `src/net/net.css` | The 👥 button, the invite sheet with the QR code, the feed chips, the 🎉 and 🐾 buttons |
+| `src/net/ui.ts`, `src/net/net.css` | The 👥 button, the invite sheet with the QR code, the feed chips, the 🐾 button |
 | `worker/index.ts` | The Cloudflare Worker: serves `dist/`, and a `Room` Durable Object per room code relays messages between its phones |
 | `wrangler.jsonc` | Cloudflare config: Worker name (`hw13-pets`), static files, the `Room` Durable Object |
 | `scripts/fake-friend.mjs` | A scripted friend (Mochi the corgi) for trying multiplayer without a second phone |
@@ -277,4 +275,4 @@ It prints the address, e.g. `https://hw13-pets.<your-subdomain>.workers.dev`. Op
 - **Shadow size**: `shadowSizeFor` in `src/shadow.ts`.
 - **Multiplayer**: where friends' pets stand (`SLOTS`) and how often this pet is sent (`SEND_EVERY_MS`): top of `src/net/party.ts`. Smoothing delay (`INTERP_DELAY_MS`) and how far a friend's pet strays from its spot (`WANDER_RADIUS`): top of `src/net/remotePet.ts`. Players per room: `MAX_PLAYERS` in `src/net/protocol.ts`.
 - **Pets meeting**: how often an idle pet goes to say hi (`MEET_AUTO_MIN_S` / `MEET_AUTO_MAX_S`), the timeline (`MEET_SNIFF_S`, `MEET_TRICK_S`, `MEET_END_S`) and which tricks each species pair does (`MEET_TRICKS`): top of `src/net/party.ts`.
-- **New species in multiplayer**: a pet card's `kind` is the species from `src/pets.ts`, so a species `sanitizePet()` and `createPetCharacter()` know joins rooms automatically (`src/net/kinds.ts`). Friends' phones pose it from the same `PetControls`. Dogs and cats share the 🎉 party: a friend's trick is replaced by your animal's trick in the same button slot.
+- **New species in multiplayer**: a pet card's `kind` is the species from `src/pets.ts`, so a species `sanitizePet()` and `createPetCharacter()` know joins rooms automatically (`src/net/kinds.ts`). Friends' phones pose it from the same `PetControls`. A trick a friend sends to your pet is replaced by your animal's trick in the same button slot.

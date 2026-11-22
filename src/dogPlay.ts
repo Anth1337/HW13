@@ -228,7 +228,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     burst: (point, zone) => fx.burst(point, zone),
     command: (cmd) => {
       if (!brain) return;
-      // A friend's 🎉 trick is their species' trick: do ours in the same slot (a cat can't roll over).
+      // A friend's command may be their species' trick: do ours in the same slot (a cat can't roll over).
       if (cmd in TRICK_LABEL && !labels.tricks.includes(cmd as TrickKind)) {
         const i = Object.values(PLAY_LABELS).map((l) => l.tricks.indexOf(cmd as TrickKind)).find((j) => j >= 0) ?? 0;
         cmd = labels.tricks[i];
@@ -236,7 +236,6 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       brain.command(cmd);
       syncButtons();
     },
-    tricks: labels.tricks,
     social: (s) => brain?.social(s),
     sociable: () => !!brain?.sociable,
   });

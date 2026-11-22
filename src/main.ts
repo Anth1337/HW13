@@ -9,7 +9,6 @@ import { petName, petStore } from "./pets";
 import { createPreview } from "./preview";
 import { initNet } from "./net";
 import { mountRoomUI } from "./net/ui";
-import { createQuickLook, isIOS } from "./quicklook";
 import { arUIFromDOM, isWebXRARSupported, startARSession, type ARUI } from "./webxr";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -17,14 +16,15 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const home = $("home");
 const homeText = $("home-text");
 const deployButton = $<HTMLButtonElement>("btn-deploy");
-const cameraButton = $<HTMLButtonElement>("btn-camera");
-const quickLook = $<HTMLAnchorElement>("quicklook");
-const quickLookImg = $<HTMLImageElement>("quicklook-img");
 const cameraVideo = $<HTMLVideoElement>("camera-video");
 const menuEl = $("menu");
 const creatorEl = $("creator");
 const backButton = $<HTMLButtonElement>("btn-back");
 const ui: ARUI = arUIFromDOM();
+
+/** iPhone / iPad (iPadOS reports itself as a Mac with touch). */
+const isIOS = () =>
+  /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.userAgent.includes("Macintosh") && navigator.maxTouchPoints > 1);
 
 initNet(); // joins ?room=… when opened from an invite (a first-time guest gets a ready-made pet)
 
@@ -148,11 +148,11 @@ function launcher(
       }
     }
     if (!withMotion) primeVoice(); // inside the tap: the mic prompt needs the gesture, and AR may refuse it later
-    deployButton.disabled = cameraButton.disabled = true;
+    deployButton.disabled = true;
     home.hidden = true;
     const restore = () => {
       home.hidden = false;
-      deployButton.disabled = cameraButton.disabled = false;
+      deployButton.disabled = false;
       view.showPreview();
     };
     try {
@@ -182,7 +182,6 @@ async function init(view: View) {
   }
 
   // Everywhere else Deploy opens camera mode (the pet over the live camera, world-tracked via src/tracking when motion sensors exist).
-  // #btn-camera stays hidden: it would only repeat Deploy.
   const camera = isCameraModeSupported();
   if (camera) {
     canDeploy = true;
@@ -198,51 +197,14 @@ async function init(view: View) {
     );
   }
 
-  // 2. iPhone / iPad: no WebXR AR. Deploy = camera mode; Quick Look shows the custom pet as a
-  //    still model on the real floor, re-exported (debounced, latest wins) when it changes.
+  // 2. iPhone / iPad: no WebXR AR. Deploy = camera mode with our own world tracking (src/tracking).
   if (isIOS()) {
     doneChecking();
-    let quickLookNote: HTMLParagraphElement | null = null;
     homeText.textContent = camera
-      ? "Pick or create a pet, then deploy it: scan the floor and tap to place it."
+      ? "Pick a pet and deploy it. Point at the floor, walk slowly, then tap to place it."
       : window.isSecureContext
-        ? "Quick Look places your pet, as a still model, on your floor."
-        : "Camera and tracking need HTTPS: open this page through an https:// address. Quick Look places your pet, as a still model, on your floor.";
-    if (camera) {
-      const tip = document.createElement("p");
-      tip.className = "home-tip";
-      tip.textContent = "Hold the phone at chest height, point it at the floor and walk slowly.";
-      deployButton.after(tip);
-      const note = document.createElement("p");
-      note.className = "home-tip home-tip-ql";
-      quickLookNote = note;
-      note.textContent = "Or Quick Look: Apple's viewer, a still model without commands.";
-      quickLook.after(note);
-    }
-    const ql = createQuickLook(quickLook, quickLookImg);
-    const syncNote = () => {
-      if (quickLookNote) quickLookNote.hidden = quickLook.hidden;
-    };
-    new MutationObserver(syncNote).observe(quickLook, { attributes: true, attributeFilter: ["hidden"] });
-    syncNote();
-    let timer: number | undefined;
-    const prepare = async () => {
-      const pet = petStore.active();
-      if (!pet) return;
-      try {
-        await ql.show(pet);
-        if (!petStore.active()) quickLook.hidden = true; // deselected while exporting
-      } catch (err) {
-        console.error(err);
-        homeText.textContent = "Couldn't prepare the AR model on this device.";
-      }
-    };
-    petStore.subscribe(() => {
-      quickLook.hidden = true; // never open an outdated pet
-      clearTimeout(timer);
-      timer = window.setTimeout(() => void prepare(), 400);
-    });
-    await prepare();
+        ? "This browser can't open the camera."
+        : "Camera and tracking need HTTPS: open this page through an https:// address.";
     return;
   }
 

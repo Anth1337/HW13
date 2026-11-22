@@ -184,7 +184,7 @@
   margin-top: 14px;
 }
 
-/* In AR: feed chips under the hint, and the party button. */
+/* In AR: feed chips under the hint, and the say-hi button. */
 .net-feed {
   display: flex;
   flex-direction: column;
@@ -209,7 +209,7 @@
   }
 }
 
-.btn.net-party {
+.btn.net-hi {
   background: rgba(255, 160, 51, 0.88);
   color: var(--on-accent);
 }

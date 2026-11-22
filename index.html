@@ -14,7 +14,7 @@
 
     <!-- Start screen (bottom sheet on phones, side panel on wide screens) over the 3D preview:
          the "My pets" slot menu (src/menu.ts) or the character creator for the active pet
-         (src/creator.ts), and the deploy buttons. Starts in the centered "checking" state
+         (src/creator.ts), and the Deploy button. Starts in the centered "checking" state
          until main.ts knows which AR path to use. -->
     <div id="home" class="home checking">
       <header class="home-head">
@@ -26,9 +26,6 @@
       <div id="creator" class="creator" aria-label="Customise your pet" hidden></div>
       <div id="home-actions" class="home-actions">
         <button id="btn-deploy" type="button" class="btn btn-primary" hidden>Deploy</button>
-        <button id="btn-camera" type="button" class="btn" hidden>Camera mode</button>
-        <!-- iOS AR Quick Look needs an <a rel="ar"> whose only child is an <img>. -->
-        <a id="quicklook" class="quicklook" rel="ar" download="dog.usdz" hidden><img id="quicklook-img" alt="Quick Look (still model)" /></a>
       </div>
     </div>
 
@@ -42,22 +39,26 @@
         <span id="voice-chip" class="status-chip voice-chip" role="status" aria-live="polite" hidden></span>
         <span id="voice-hint" class="status-chip voice-hint" hidden></span>
       </div>
+      <!-- Everything tappable: Exit top-left, small tools top-right (net/ui.ts adds 🐾 there),
+           commands + tricks docked at the bottom. -->
       <div id="ar-controls" class="ar-controls">
-        <div class="ar-row ar-commands" role="group" aria-label="Commands">
-          <button id="cmd-sit" type="button" class="btn btn-cmd" aria-pressed="false">Sit</button>
-          <button id="cmd-lie" type="button" class="btn btn-cmd" aria-pressed="false">Lie down</button>
-          <button id="cmd-come" type="button" class="btn btn-cmd">Come</button>
-          <button id="cmd-mode" type="button" class="btn btn-cmd btn-mode">Follow</button>
-        </div>
-        <div class="ar-row ar-tricks" role="group" aria-label="Tricks">
-          <button id="trick-rollOver" type="button" class="btn btn-trick">Roll over</button>
-          <button id="trick-jump" type="button" class="btn btn-trick">Jump</button>
-          <button id="trick-spin" type="button" class="btn btn-trick">Spin</button>
-        </div>
-        <div class="ar-row ar-tools" role="group" aria-label="Tools">
+        <button id="btn-exit" type="button" class="btn btn-small btn-exit" aria-label="Exit" title="Exit">✕</button>
+        <div class="ar-tools" role="group" aria-label="Tools">
           <button id="btn-voice" type="button" class="btn btn-small btn-voice" aria-pressed="false" aria-label="Voice commands" title="Voice commands" hidden>🎤</button>
           <button id="btn-vision" type="button" class="btn btn-small" aria-pressed="false" aria-label="Show vision" title="Show what your pet sees">👁</button>
-          <button id="btn-exit" type="button" class="btn btn-small btn-exit" aria-label="Exit" title="Exit">✕</button>
+        </div>
+        <div class="ar-dock">
+          <div class="ar-row ar-commands" role="group" aria-label="Commands">
+            <button id="cmd-sit" type="button" class="btn btn-cmd" aria-pressed="false">Sit</button>
+            <button id="cmd-lie" type="button" class="btn btn-cmd" aria-pressed="false">Lie down</button>
+            <button id="cmd-come" type="button" class="btn btn-cmd">Come</button>
+            <button id="cmd-mode" type="button" class="btn btn-cmd btn-mode">Follow</button>
+          </div>
+          <div class="ar-row ar-tricks" role="group" aria-label="Tricks">
+            <button id="trick-rollOver" type="button" class="btn btn-trick">Roll over</button>
+            <button id="trick-jump" type="button" class="btn btn-trick">Jump</button>
+            <button id="trick-spin" type="button" class="btn btn-trick">Spin</button>
+          </div>
         </div>
       </div>
     </div>

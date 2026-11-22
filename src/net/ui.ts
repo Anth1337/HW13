@@ -9,7 +9,7 @@ import type { RoomClient } from "./room";
  * Room UI, built from code so index.html stays as it is:
  *  - start screen: a 👥 button next to Deploy (creates a room if needed) that opens the invite
  *    sheet: QR code + link + who is in the room (big enough to show on a projector)
- *  - AR / camera overlay: the feed (short chips under the hint) and the 🎉 party button
+ *  - AR / camera overlay: the feed (short chips under the hint) and the 🐾 say-hi button
  * Names come from other players: always set with textContent.
  */
 
@@ -177,12 +177,7 @@ export function clearFeed(): void {
   feedBox?.replaceChildren();
 }
 
-/** The 🎉 button in the AR tools row (taps on it never reach the AR scene). Null if the row is missing. */
-export function partyButton(onClick: () => void): { el: HTMLButtonElement; remove(): void } | null {
-  return toolButton("🎉", "Party trick", "Party trick: every pet in the room does it", onClick);
-}
-
-/** The 🐾 button: this phone's pet goes to say hi to a friend's pet. */
+/** The 🐾 button in the AR tools (taps on it never reach the AR scene): this phone's pet goes to say hi to a friend's pet. Null if the tools are missing. */
 export function sayHiButton(onClick: () => void): { el: HTMLButtonElement; remove(): void } | null {
   return toolButton("🐾", "Say hi to a friend's pet", "Say hi: your pet goes to meet a friend's pet", onClick);
 }
@@ -190,7 +185,7 @@ export function sayHiButton(onClick: () => void): { el: HTMLButtonElement; remov
 function toolButton(icon: string, label: string, title: string, onClick: () => void): { el: HTMLButtonElement; remove(): void } | null {
   const tools = document.querySelector("#ar-controls .ar-tools");
   if (!tools) return null;
-  const b = el("button", "btn btn-small net-party", icon);
+  const b = el("button", "btn btn-small net-hi", icon);
   b.type = "button";
   b.title = title;
   b.setAttribute("aria-label", label);

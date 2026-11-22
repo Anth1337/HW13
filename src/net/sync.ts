@@ -31,7 +31,7 @@ export interface PetState {
 }
 
 export type PetEvent =
-  /** A command. No `to`: the sender commanded their own pet (for the feed). "*": every pet in the room. Else: that player's pet. */
+  /** A command. No `to`: the sender commanded their own pet (for the feed). Else: that player's pet. */
   | { k: "cmd"; c: DogCommand; to?: string }
   /** The sender's hand is on `to`'s pet; repeated every PET_REPEAT_MS while it stays there. */
   | { k: "pet"; to: string; z: "head" | "body" }

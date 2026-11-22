@@ -35,7 +35,7 @@ import type { ARUI } from "./webxr";
  * real size facing you -> tap the floor to send it, hold (0.6 s) to re-place it at the reticle.
  * The three.js camera follows src/tracking's pose every frame (gyro rotation + visual odometry on
  * the floor plane at an assumed camera height), so the dog stays where it is in the room. World:
- * y up, floor at y = 0. HONEST LIMITS: there is no ARKit / depth on iOS web. Rotation is solid;
+ * y up, floor at y = 0. HONEST LIMITS: there is no native AR / depth on iOS web. Rotation is solid;
  * translation is an estimate from floor features and the assumed height (real phones will drift
  * and lose it over featureless floors; the tracker then reports "limited" and holds position).
  *
