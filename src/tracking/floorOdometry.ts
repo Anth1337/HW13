@@ -75,8 +75,8 @@ const CELLS_Y = 6;
 const MAX_SPEED = 3.2; // m/s
 const PX_SIGMA = 0.5;
 const TAU_IN = 1.6; // inlier threshold (px)
-const MAX_OMEGA = 0.7; // rad/s (40 deg/s)
-const GATE_K = 20; // cost reduction must exceed GATE_K * sigma_eff^2
+const MAX_OMEGA = 1.5; // rad/s (~86 deg/s): above this a few ms of timing error is several degrees
+const GATE_K = 5; // cost reduction must exceed GATE_K * sigma_eff^2 (20 held ~1 cm/frame walking steps while turning: 30-40% of the distance lost)
 
 export class FloorOdometry {
   readonly width: number;
@@ -591,7 +591,7 @@ export class FloorOdometry {
       // latency of the camera pipeline is unknown) plus 3% rotation-increment error.
       const rotAllow = (0.05 + 0.03 * dt) * omega * f;
       const sig2 = PX_SIGMA * PX_SIGMA + rotAllow * rotAllow;
-      // Above ~60 deg/s a timing error of a few ms is several degrees: translation is not
+      // Above MAX_OMEGA a timing error of a few ms is several degrees: translation is not
       // observable reliably, hold the position (landmarks keep it consistent afterwards).
       const significant = omega < MAX_OMEGA && c0 - c1 > GATE_K * sig2;
       if (significant) {
