@@ -9,12 +9,14 @@ import { createVoiceListener, parseVoiceCommand, type VoiceListener, type VoiceR
 import { HAND_BONES, createHandOccluder } from "./vision/handOccluder";
 import { liftObservation } from "./vision/lift";
 import type { CameraModel, Observation, Perception, PerceivedPerson, VisionDetector } from "./vision/types";
+import { petBuzz } from "./net/kinds";
+import { createPartyLink } from "./net/party";
 
 /*
  * Everything the two "play with the pet" modes share (WebXR AR in webxr.ts and the camera
  * fallback in cameraMode.ts): the cached hand/face detector, the single pet's brain, the hand
- * occluder, petting hearts + haptics, the command / trick / vision buttons, the status chip and
- * the "Show vision" debug drawing.
+ * occluder, petting hearts + haptics, the command / trick / vision buttons, the status chip,
+ * the "Show vision" debug drawing and, when the page is in a room, friends' pets (net/party.ts).
  *
  * Per rendered frame a mode calls, in this order:
  *   if (play.wantsFrame(timeMs)) play.see(image, timeMs, cam)   // fresh camera image only
@@ -56,10 +58,6 @@ export const PLAY_LABELS: Record<Species, PlayLabels> = {
   dog: { sit: "Sit", lie: "Lie down", come: "Come", tricks: ["rollOver", "jump", "spin"] },
   cat: { sit: "Sit", lie: "Loaf", come: "Here, kitty", tricks: ["pounce", "stretch", "groom"] },
 };
-
-/** Purr-like buzzes for cat petting (head = short, body = longer); dogs get a single bump. */
-const PURR_HEAD = [8, 24, 8, 24, 8, 24, 8];
-const PURR_BODY = [8, 24, 8, 24, 8, 24, 8, 24, 8, 24, 8];
 
 export const MODE_LABEL: Record<DogMode, string> = { follow: "Follow", free: "Free roam", stay: "Stay" };
 
@@ -226,6 +224,23 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
   let utteranceOpen = false;
   let extendTimer: ReturnType<typeof setTimeout> | null = null;
 
+  const party = createPartyLink(scene, {
+    burst: (point, zone) => fx.burst(point, zone),
+    command: (cmd) => {
+      if (!brain) return;
+      // A friend's 🎉 trick is their species' trick: do ours in the same slot (a cat can't roll over).
+      if (cmd in TRICK_LABEL && !labels.tricks.includes(cmd as TrickKind)) {
+        const i = Object.values(PLAY_LABELS).map((l) => l.tricks.indexOf(cmd as TrickKind)).find((j) => j >= 0) ?? 0;
+        cmd = labels.tricks[i];
+      }
+      brain.command(cmd);
+      syncButtons();
+    },
+    tricks: labels.tricks,
+    social: (s) => brain?.social(s),
+    sociable: () => !!brain?.sociable,
+  });
+
   const commandButtons: { button: HTMLButtonElement; cmd: () => DogCommand }[] = [
     { button: ui.cmdSit, cmd: () => (brain?.posture === "sit" ? "stand" : "sit") },
     { button: ui.cmdLie, cmd: () => (brain?.posture === "lie" ? "stand" : "lie") },
@@ -355,6 +370,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       return;
     }
     brain.command(command, speaker);
+    party?.commanded(command);
     firedCmd = command;
     firedMs = nowMs;
     utteranceOpen = true;
@@ -572,7 +588,9 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     const onClick = () => {
       if (voiceWanted && voiceState === "off") startVoice(); // remembered choice resumes on the first tap
       if (!brain) return;
-      brain.command(entry.cmd());
+      const cmd = entry.cmd();
+      brain.command(cmd);
+      party?.commanded(cmd);
       navigator.vibrate?.(12);
       syncButtons();
     };
@@ -619,10 +637,10 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       dog = newDog;
       dogClock = 0;
       brain = createPetBrain(newDog, anchor, floorY);
-      const cat = newDog.species === "cat";
+      party?.attach(newDog, anchor);
       unsubPet = brain.onPetStart((zone, point) => {
         fx.burst(point, zone);
-        navigator.vibrate?.(cat ? (zone === "head" ? PURR_HEAD : PURR_BODY) : zone === "head" ? 30 : [20, 40, 20]);
+        navigator.vibrate?.(petBuzz(newDog.species, zone));
       });
       syncButtons();
       return brain;
@@ -709,8 +727,10 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       if (brain && dog) {
         dogClock += dt;
         brain.update(dt, perception, viewer);
+        party?.beforeDogUpdate(dt);
         dog.update(dogClock);
       }
+      party?.update(dt, perception);
       occluder.update(dt, perception.hands, handOcclusion);
       fx.update(dt);
       syncButtons();
@@ -727,6 +747,7 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       unsubPet?.();
       unsubPet = null;
       for (const off of cleanups) off();
+      party?.dispose();
       clearExtendTimer();
       releaseVoice();
       voice = null;

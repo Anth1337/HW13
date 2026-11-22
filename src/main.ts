@@ -7,6 +7,8 @@ import { mountCreator } from "./creator";
 import { mountMenu } from "./menu";
 import { petName, petStore } from "./pets";
 import { createPreview } from "./preview";
+import { initNet } from "./net";
+import { mountRoomUI } from "./net/ui";
 import { createQuickLook, isIOS } from "./quicklook";
 import { arUIFromDOM, isWebXRARSupported, startARSession, type ARUI } from "./webxr";
 
@@ -23,6 +25,8 @@ const menuEl = $("menu");
 const creatorEl = $("creator");
 const backButton = $<HTMLButtonElement>("btn-back");
 const ui: ARUI = arUIFromDOM();
+
+initNet(); // joins ?room=… when opened from an invite (a first-time guest gets a ready-made pet)
 
 /*
  * Two views in the panel: the "My pets" slot menu (always first, also on revisit, with the last
@@ -49,6 +53,7 @@ backButton.addEventListener("click", () => {
   menuEl.querySelector<HTMLElement>(`[data-key="pick-${petStore.activeSlot()}"]`)?.focus();
 });
 mountMenu(menuEl, showCreator);
+mountRoomUI($("home-actions"));
 
 /** Set once the AR path is known: whether this device has a Deploy button at all. */
 let canDeploy = false;

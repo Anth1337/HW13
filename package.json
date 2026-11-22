@@ -5,20 +5,26 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "dev:rooms": "vite build && wrangler dev --port 8787 --ip 127.0.0.1",
+    "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p worker",
+    "deploy": "npm run build && wrangler deploy",
+    "fake-friend": "node scripts/fake-friend.mjs",
     "check:pets": "rolldown src/pets.ts -f esm -p node -o node_modules/.cache/pets.mjs && node scripts/check-pets.mjs",
     "check:tracking": "rolldown src/tracking/index.ts -f esm -p node -o node_modules/.cache/tracking.mjs && node scripts/check-tracking.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "^1.2.3",
-    "three": "^0.187.0"
+    "three": "^0.187.0",
+    "uqr": "^0.1.3"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261121.1",
     "@types/three": "^0.187.0",
     "@vitejs/plugin-basic-ssl": "^2.3.0",
     "typescript": "~6.0.3",
-    "vite": "^8.3.8"
+    "vite": "^8.3.8",
+    "wrangler": "^4.166.0"
   }
 }

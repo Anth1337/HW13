@@ -79,8 +79,25 @@ The **dog** and the **cat** share the same play modes; the buttons change to sui
 - **Cats** get cat commands: **Sit**, **Loaf** (tucked-up paws), **Here kitty** (it comes over... when it feels like it, so it may ignore you), **Follow** / **Free roam**, and the tricks **Pounce**, **Stretch** and **Groom**. Petting a cat makes it purr, slow-blink and rub its head on your hand, or arch its back with its tail up.
 - **Voice commands**: tap **🎤** and talk to the dog (see below).
 - **Several people**: the dog tells people apart and keeps them straight (see below).
+- **Friends' pets**: several phones in one room, each with its own pet (see below).
 - **Eye contact**: someone looking at the dog gets looked back at (one person at a time, and it doesn't flip-flop between two lookers).
 - **👁** draws what the computer vision sees (hands, bodies, faces, person ids, who is speaking, depth / mask state) on top of the camera. **✕** goes back to the creator.
+
+### Play together (multiplayer)
+
+Every phone brings its own pet to the party, and everyone sees everyone's pets.
+
+- On the start screen, tap **👥 Friends**: it opens a room and shows a **QR code**, the room code and a link (big enough to show on a projector from a laptop). Friends scan it with the phone camera, make their dog (a first-time guest starts with a random one, so the room isn't full of identical labradors) and **Deploy**. The button shows how many are in the room ("👥 3 here").
+- In AR / camera mode, friends' pets stand around yours with their name above them, doing exactly what they do on their owner's phone: walking, sitting, tricks, being petted.
+- **Pet a friend's pet** with your hand: it leans in here, on its owner's phone and on everyone else's, and the owner sees "💕 …'s human is petting …".
+- **🎉** makes every pet in the room do the same random trick at once.
+- **Pets meet each other.** Now and then an idle pet (following or roaming) walks over to a friend's pet to say hi, and **🐾** sends yours right away (to the friend's pet it met least recently). The two walk up nose to nose, sniff, then each does a trick that suits the other: two dogs spin and jump, a dog and a cat jump and pounce, two cats stretch and groom. A pet that is sitting or lying stays put and the other one comes to it. Every phone shows the meeting from where the pets stand on that phone.
+- A feed under the hint says who joined or left, who is petting whom and which tricks friends asked for.
+- Up to 8 phones per room. A phone that loses the connection reconnects on its own (a 📡 chip says so); meanwhile friends' pets disappear and then come back.
+
+What is shared: each pet's look and name, where it is and what it's doing (about 10 updates a second, only while someone else is in the room). The camera image and audio never leave the phone. The room server only relays messages between the phones in a room and stores nothing.
+
+**Limit:** browsers can't share AR anchors between phones, so each phone shows friends' pets around its own pet rather than at the same real-world spot. For a demo, have everyone place their pet on the same spot (the table, or the printed QR code) and it looks shared.
 
 ### Voice commands
 
@@ -162,6 +179,40 @@ cloudflared tunnel --url https://localhost:4173 --no-tls-verify
 
 `npm run check:pets` runs a small self-check of the slot storage (`src/pets.ts`: legacy migration, reload, delete, corrupt data).
 
+### Multiplayer while developing
+
+The rooms run in a local copy of the Cloudflare Worker, next to Vite. Use two terminals:
+
+```sh
+npm run dev         # terminal 1: the app; it forwards /party to the rooms
+npm run dev:rooms   # terminal 2: builds once, then runs the rooms on http://127.0.0.1:8787
+```
+
+Phones reach the rooms through the same address as the page, so options A, B and C above work unchanged. To use the deployed rooms from a local front-end instead, put `VITE_ROOM_SERVER=wss://hw13-pets.<your-subdomain>.workers.dev` in `.env.local`.
+
+No second phone? `npm run fake-friend -- <invite link>` (or `-- <room code>` for the local rooms) adds Mochi, a scripted corgi who walks, sits, does tricks, pets your pet now and then and walks over to say hi to it every 24 s. It works against the deployed site too.
+
+## Put it online (Cloudflare, free)
+
+For the demo, deploy instead of tunnelling. You get a stable `https://` address that works on any phone and any network, without the laptop in the loop. One Cloudflare Worker serves the built site and runs the rooms (one Durable Object per room code).
+
+First time only (needs a free Cloudflare account):
+
+```sh
+npx wrangler login   # opens the browser to authorise this computer
+```
+
+Then, each time you want to publish the current code:
+
+```sh
+npm run deploy       # typecheck, build, upload
+```
+
+It prints the address, e.g. `https://hw13-pets.<your-subdomain>.workers.dev`. Open it, tap **👥 Friends** and let people scan the QR code.
+
+- The site's files don't count against the free plan. Room traffic does: 100,000 requests a day, where each room join is one and every 20 room messages are one. That's several hours of a full 8-phone room. The count resets at 00:00 UTC (7 pm Eastern). `npx wrangler tail` shows live logs.
+- `.env` is not uploaded. Never put an API key in a `VITE_` variable: those are built into the page, where anyone can read them. A key the app needs at runtime belongs in the Worker (`npx wrangler secret put NAME`).
+
 ## Phone requirements
 
 - **Android**: Chrome with **Google Play Services for AR** (ARCore). Chrome offers to install it if it's missing.
@@ -202,6 +253,17 @@ cloudflared tunnel --url https://localhost:4173 --no-tls-verify
 | `src/voice/listener.ts` | Web Speech API wrapper: auto-restart, permission / unsupported states |
 | `src/quicklook.ts` | iPhone secondary option ("Quick Look (still model)"): exports the current dog to `.usdz` in the browser (re-exported when it changes) for AR Quick Look |
 | `src/shadow.ts` | The invisible shadow-catcher plane under the dog |
+| `src/net/protocol.ts` | The room messages, shared by the app and the Worker |
+| `src/net/room.ts` | One phone's connection to a room: roster, reconnects, pings |
+| `src/net/index.ts` | The page's room: `?room=` links, invite URL, room codes, a random dog in slot 1 for first-time guests |
+| `src/net/sync.ts` | The pet state sent about 10 times a second and the events (commands, petting, party trick, pets meeting), checked on arrival |
+| `src/net/remotePet.ts` | A friend's pet on this phone: built from their pet card, posed from their states (smoothed), name tag and shadow |
+| `src/net/party.ts` | Multiplayer inside one AR / camera session: sends this pet, places friends' pets, petting them, pets meeting each other, the feed, 🎉 and 🐾 |
+| `src/net/kinds.ts` | The pet card this phone sends (its active dog or cat), building a friend's dog or cat from theirs, names, emoji, petting haptics |
+| `src/net/ui.ts`, `src/net/net.css` | The 👥 button, the invite sheet with the QR code, the feed chips, the 🎉 and 🐾 buttons |
+| `worker/index.ts` | The Cloudflare Worker: serves `dist/`, and a `Room` Durable Object per room code relays messages between its phones |
+| `wrangler.jsonc` | Cloudflare config: Worker name (`hw13-pets`), static files, the `Room` Durable Object |
+| `scripts/fake-friend.mjs` | A scripted friend (Mochi the corgi) for trying multiplayer without a second phone |
 
 ## Tweaks
 
@@ -213,3 +275,6 @@ cloudflared tunnel --url https://localhost:4173 --no-tls-verify
 - **Who is speaking / person grouping** (arm-reach gates, speaking thresholds, how long a person is remembered): constants at the top of `src/vision/people.ts`. Body / face / hand counts: `createVisionDetector({ maxHands, maxFaces, maxBodies })` in `src/dogPlay.ts`.
 - **Hand mask size**: `BIAS` in `src/vision/handOccluder.ts` (lower = cuts out less of the dog, higher = bigger mask).
 - **Shadow size**: `shadowSizeFor` in `src/shadow.ts`.
+- **Multiplayer**: where friends' pets stand (`SLOTS`) and how often this pet is sent (`SEND_EVERY_MS`): top of `src/net/party.ts`. Smoothing delay (`INTERP_DELAY_MS`) and how far a friend's pet strays from its spot (`WANDER_RADIUS`): top of `src/net/remotePet.ts`. Players per room: `MAX_PLAYERS` in `src/net/protocol.ts`.
+- **Pets meeting**: how often an idle pet goes to say hi (`MEET_AUTO_MIN_S` / `MEET_AUTO_MAX_S`), the timeline (`MEET_SNIFF_S`, `MEET_TRICK_S`, `MEET_END_S`) and which tricks each species pair does (`MEET_TRICKS`): top of `src/net/party.ts`.
+- **New species in multiplayer**: a pet card's `kind` is the species from `src/pets.ts`, so a species `sanitizePet()` and `createPetCharacter()` know joins rooms automatically (`src/net/kinds.ts`). Friends' phones pose it from the same `PetControls`. Dogs and cats share the 🎉 party: a friend's trick is replaced by your animal's trick in the same button slot.
