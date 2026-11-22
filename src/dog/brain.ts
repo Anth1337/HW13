@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { petGaitInfo } from "../models/pet";
 import type { Species } from "../pets";
 import type { PerceivedFace, PerceivedHand, PerceivedPerson } from "../vision/types";
+import { contactTol, handZoneGap } from "./contact";
 import { TRICK_DURATION } from "./types";
 import type { DogBrain, DogCommand, DogMode, DogZones, PetCharacter, PetSocial, TrickKind } from "./types";
 
@@ -15,7 +16,8 @@ import type { DogBrain, DogCommand, DogMode, DogZones, PetCharacter, PetSocial, 
  *   1. perception bookkeeping (petting zones, engaged hand, eye-contact partner)
  *      — organised per PERSON: hands/faces carry a personId (null = anonymous, keyed by its own id)
  *   2. behaviour picks ONE locomotion goal (`want`: target point / speed / facing), by priority:
- *      trick > petting > another pet (social) > hand > come / goTo > mode (follow / free / stay)
+ *      trick > petting > another pet (social) > hand at the pet (hold still) > hand > come / goTo
+ *      > mode (follow / free / stay)
  *   3. postures (sit / lie / stand-up-before-walking) and locomotion steer the anchor
  *   4. look target (hand > eye contact > glance at the user > idle), sniff, excitement, status
  *
@@ -31,7 +33,11 @@ const DEG = Math.PI / 180;
 const COME_DIST = 0.6; // m in front of the user (nose)
 const FREE_RADIUS = 2.1; // m: wander targets are within this of the user (limit 2.5)
 const FREE_LIMIT = 2.5;
-const VIEWER_KEEPOUT = 0.35; // m: the nose never gets closer than this to the camera (floor plane)
+const VIEWER_KEEPOUT = 0.35; // m: planned targets (follow / come / social) keep the nose this far from the camera (floor plane)
+// The pet never WALKS its nose closer than this to the camera (hand targets aim no nearer either).
+// It only undoes the pet's own approach: the camera coming closer never pushes the pet away,
+// otherwise reaching down to pet it shoves it off (camera keep-out = "it moves away from me").
+const KEEPOUT_HARD = 0.2; // m
 const TURN_FACE_START = 35 * DEG; // idle: turn to face the user when further round than this
 const TURN_FACE_STOP = 6 * DEG;
 
@@ -45,8 +51,10 @@ const SHUFFLE_DIST = 0.3; // m: closer targets are reached by shuffling, without
 const HAND_MAX_AGE = 0.4;
 const HAND_MIN_CONF = 0.3;
 const PET_DWELL = 0.2;
-const PET_DROPOUT = 0.35;
-const PET_RELEASE = 0.5;
+// Size-based hand depth (iOS) jitters in and out of the zone at 8-15 Hz detection rates:
+// tolerate a few missed detections before a dwell resets / a session ends.
+const PET_DROPOUT = 0.5;
+const PET_RELEASE = 0.9;
 const PET_MIN_DETECTIONS = 2; // distinct detections before a session starts (one noisy frame is not enough)
 const HAND_NEAR_NOSE = 0.6; // m
 const HAND_LOW_ABOVE = 0.5; // m above floor + dog height
@@ -58,7 +66,13 @@ const HAND_KEEP_SPEED = 0.9;
 const HAND_RELEASE = 1.0; // s after the hand stops qualifying
 const SNIFF_STANDOFF = 0.12; // m nose → palm
 const LURE_STANDOFF = 0.25; // m while the hand moves
-const FINGERTIPS = [4, 8, 12, 16, 20];
+const LURE_MIN_DIST = 0.45; // m palm → nose: a hand moving in closer is reaching to pet, not luring
+// Hold still: while any hand is this close to a petting zone (depth-tolerant gap, m) the pet
+// stops walking (follow / free / come / lure) so the user never has to chase it. Hysteresis:
+// released once the gap stays above HOLD_RELEASE_GAP for HOLD_RELEASE_S.
+const HOLD_GAP = 0.25;
+const HOLD_RELEASE_GAP = 0.35;
+const HOLD_RELEASE_S = 0.6;
 
 // Eye contact (faces).
 const COS_ENTER = Math.cos(18 * DEG);
@@ -375,6 +389,11 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
   const petListeners = new Set<(zone: Zone, worldPoint: THREE.Vector3) => void>();
   const handPrevAge = new Map<number, number>(); // distinct-detection bookkeeping
   let freshMask = 0; // bit i = hands[i] is a new detection this frame (first 31 hands)
+  let handHold = false; // a hand is near a petting zone: stand still (HOLD_GAP)
+  let holdFarSince = -Infinity; // when the nearest hand last went beyond HOLD_RELEASE_GAP (-Infinity = it is near)
+  const holdPalm = new THREE.Vector3(); // palm of the hand nearest the pet while holding
+  const holdHit = new THREE.Vector3(); // scratch
+  const notMuzzle = (p: THREE.Vector3): boolean => !muzzleRegion(p);
 
   let engagedId: number | null = null;
   let engagedKey = NO_KEY; // person of the engaged hand
@@ -523,6 +542,27 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
     }
   }
 
+  /**
+   * Floor distance from the nose to the camera, from two nose estimates (x1, z1: straight ahead
+   * of the anchor; x2, z2: the posed nose, head turned / bobbing); the one nearer the camera
+   * counts. Its offset from the camera is left in keepEx / keepEz.
+   */
+  let keepEx = 0;
+  let keepEz = 0;
+  function noseViewerDist(x1: number, z1: number, x2: number, z2: number): number {
+    let ex = x1 - viewerW.x;
+    let ez = z1 - viewerW.z;
+    const ex2 = x2 - viewerW.x;
+    const ez2 = z2 - viewerW.z;
+    if (ex2 * ex2 + ez2 * ez2 < ex * ex + ez * ez) {
+      ex = ex2;
+      ez = ez2;
+    }
+    keepEx = ex;
+    keepEz = ez;
+    return Math.hypot(ex, ez);
+  }
+
   // ---- Petting ---------------------------------------------------------------------------
 
   function updateHandsBookkeeping(hands: readonly PerceivedHand[]): void {
@@ -545,36 +585,28 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
     }
   }
 
-  /** A hand the dog is sniffing (below eye level, around the muzzle / chin) is not a head pat:
-   *  pats come from above or behind the eyes. */
+  /** A hand the dog is sniffing (below eye level, in front of the muzzle / chin) is not a head pat:
+   *  pats come from above or behind the eyes. Kept narrow (clearly ahead AND clearly below the
+   *  eyes), since a camera-side reach to the face arrives from exactly that side. */
   function muzzleRegion(p: THREE.Vector3): boolean {
     const ahead = (p.x - eyes.x) * Math.sin(yaw) + (p.z - eyes.z) * Math.cos(yaw);
-    return ahead > -0.05 && p.y < eyes.y - 0.01;
+    return ahead > 0.02 && p.y < eyes.y - 0.04;
   }
 
-  function testZone(z: THREE.Sphere, h: PerceivedHand, out: THREE.Vector3, excludeMuzzle: boolean): boolean {
-    let best = Infinity;
-    if (z.containsPoint(h.palm) && !(excludeMuzzle && muzzleRegion(h.palm))) {
-      best = h.palm.distanceToSquared(z.center);
-      out.copy(h.palm);
-    }
-    for (const i of FINGERTIPS) {
-      const p = h.points[i];
-      if (!p || !z.containsPoint(p) || (excludeMuzzle && muzzleRegion(p))) continue;
-      const d = p.distanceToSquared(z.center);
-      if (d < best) {
-        best = d;
-        out.copy(p);
-      }
-    }
-    return best < Infinity;
+  /**
+   * Hand ↔ zone contact, depth-tolerant along the camera ray when the hand's depth is size-based
+   * (contact.ts). `active` = the session tested for is running: wider tolerance (hysteresis).
+   * The muzzle exclusion is applied to the contact point on the pet.
+   */
+  function testZone(z: THREE.Sphere, h: PerceivedHand, out: THREE.Vector3, excludeMuzzle: boolean, active: boolean): boolean {
+    return handZoneGap(z, h, contactTol(h, active), out, excludeMuzzle ? notMuzzle : undefined) <= 0;
   }
 
   /** Tests one hand against a zone for the session `s`; a session already running only listens to its owner. */
   function considerZone(s: PetState, z: THREE.Sphere, h: PerceivedHand, key: number, fresh: boolean, excludeMuzzle: boolean): boolean {
     const ownHand = h.id === s.ownerHand;
     if (s.active && key !== s.owner && !ownHand) return false;
-    if (!testZone(z, h, petHit, excludeMuzzle)) return false;
+    if (!testZone(z, h, petHit, excludeMuzzle, s.active)) return false;
     if (ownHand && key !== s.owner) s.owner = key; // the owner's hand got (or lost) a personId
     if (!s.hit || (key === s.owner && s.hitKey !== s.owner)) {
       s.hit = true;
@@ -592,6 +624,7 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
     dog.getZones(zones);
     pets.head.hit = false;
     pets.body.hit = false;
+    let holdGap = Infinity;
     for (let i = 0; i < hands.length; i++) {
       const h = hands[i];
       if (h.age >= HAND_MAX_AGE || h.confidence < HAND_MIN_CONF) continue;
@@ -601,13 +634,34 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       // The muzzle exclusion only gates the START of a head session (the head lifts into the hand).
       if (!considerZone(pets.head, zones.head, h, key, fresh, !pets.head.active)) {
         // A hand in the head zone that was only refused because someone else owns the head session is not a body pat.
-        const refused = pets.head.active && testZone(zones.head, h, petHit, false);
-        if (!refused) considerZone(pets.body, zones.body, h, key, fresh, false);
+        const refused = pets.head.active && testZone(zones.head, h, petHit, false, true);
+        // A hand on the face from the camera side (only refused by the muzzle exclusion, which is
+        // the sole possible reason while no head session runs) still pets: credit it to the body
+        // session instead of letting the reach fall into nothing.
+        if (!refused && !considerZone(pets.body, zones.body, h, key, fresh, false) && !pets.head.active) {
+          considerZone(pets.body, zones.head, h, key, fresh, false);
+        }
+      }
+      // Hold still: the nearest hand to either zone (always with the wider, active tolerance).
+      const tol = contactTol(h, true);
+      const g = Math.min(handZoneGap(zones.head, h, tol, holdHit), handZoneGap(zones.body, h, tol, holdHit));
+      if (g < holdGap) {
+        holdGap = g;
+        holdPalm.copy(h.palm);
       }
     }
     stepZone("head", dt);
     stepZone("body", dt);
     petOwnerKey = pets.head.active ? pets.head.owner : pets.body.active ? pets.body.owner : NO_KEY;
+
+    if (holdGap < HOLD_GAP) {
+      handHold = true;
+      holdFarSince = -Infinity;
+    } else if (handHold) {
+      if (holdGap <= HOLD_RELEASE_GAP) holdFarSince = -Infinity;
+      else if (holdFarSince === -Infinity) holdFarSince = now;
+      if (holdFarSince !== -Infinity && now - holdFarSince >= HOLD_RELEASE_S) handHold = false;
+    }
   }
 
   function stepZone(zone: Zone, dt: number): void {
@@ -647,10 +701,12 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
   /** 0 = no interest, 1 = look only (near camera), 2 = engage. `keep` relaxes thresholds. */
   function handInterest(h: PerceivedHand, keep: boolean): number {
     if (h.age >= HAND_MAX_AGE || h.confidence < HAND_MIN_CONF) return 0;
-    if (h.nearCamera) return 1;
+    // Near the pet wins over near the camera: with the phone held right above the pet (the
+    // natural petting pose) the reaching hand is close to both.
     const noseD = h.palm.distanceTo(nose);
-    const speed = h.velocity.length();
     if (noseD < (keep ? HAND_KEEP_NEAR : HAND_NEAR_NOSE)) return 2;
+    if (h.nearCamera) return 1;
+    const speed = h.velocity.length();
     const low = h.palm.y < floorY + dog.height + HAND_LOW_ABOVE;
     if (!low) return 0;
     const dx = h.palm.x - anchor.position.x;
@@ -925,6 +981,7 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
     | "petBody"
     | "handSniff"
     | "handApproach"
+    | "handHold"
     | "handLure"
     | "handWatch"
     | "come"
@@ -986,6 +1043,20 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       return;
     }
 
+    // 2b'. A hand right at the pet (about to pet it): stand still and let it land. Overrides
+    // follow / free / come / lure, which would otherwise keep the pet walking until the hand is
+    // already inside a zone, so the user has to chase it. Tricks and petting rank above this.
+    if (handHold) {
+      activity = "handHold";
+      const p = engagedId !== null ? engagedPalm : holdPalm;
+      if (engagedId !== null && engagedSpeed < HAND_STILL && p.distanceTo(nose) < 0.3) handSniffing = true;
+      if (postureCmd === "stand") {
+        const ang = Math.abs(wrap(Math.atan2(p.x - ax, p.z - az) - yaw));
+        if (ang > 50 * DEG && Math.hypot(p.x - ax, p.z - az) > 0.6 * noseF) setFace(p.x, p.z);
+      }
+      return; // no setWant: the pet decelerates and stands still
+    }
+
     // 2c. A hand of interest.
     if (engagedId !== null) {
       // Don't walk off while a hand is settling into a petting zone.
@@ -995,7 +1066,9 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
         activity = "handWatch";
         return;
       }
-      const moving = engagedSpeed >= HAND_STILL;
+      const noseToPalm = engagedPalm.distanceTo(nose);
+      // Luring needs a hand moving at a distance; a hand moving in close is reaching to pet.
+      const moving = engagedSpeed >= HAND_STILL && noseToPalm > LURE_MIN_DIST;
       const px = engagedPalm.x;
       const pz = engagedPalm.z;
       let dx = px - ax;
@@ -1012,11 +1085,11 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       const want3 = moving ? LURE_STANDOFF : SNIFF_STANDOFF;
       // Keep the nose a little in front of the palm horizontally (sniffing reaches down/forward).
       const horiz = Math.max(0.08, Math.sqrt(Math.max(0, want3 * want3 - dh * dh)));
-      // Nose target, kept out of the camera's way, then the anchor behind it.
-      keepOutNose(px - dx * horiz, pz - dz * horiz, VIEWER_KEEPOUT);
+      // Nose target, kept out of the lens (only the hard keep-out: a hand held near the phone is
+      // still worth coming to), then the anchor behind it.
+      keepOutNose(px - dx * horiz, pz - dz * horiz, KEEPOUT_HARD);
       const tx = tmp.x - dx * noseF;
       const tz = tmp.z - dz * noseF;
-      const noseToPalm = engagedPalm.distanceTo(nose);
       if (noseToPalm < 0.3 && !moving) {
         handSniffing = true;
         activity = "handSniff";
@@ -1281,6 +1354,8 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
     let dist = 0;
     let dirX = 0;
     let dirZ = 0;
+    // Nose → camera floor distance before this frame's step (see the keep-out below).
+    const edPrev = noseViewerDist(ax + Math.sin(yaw) * noseF, az + Math.cos(yaw) * noseF, nose.x, nose.z);
 
     if (want.move && canMove) {
       const dx = want.x - ax;
@@ -1363,20 +1438,21 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       anchor.position.z += mz * step;
     }
 
-    // Hard keep-out: the nose never gets within VIEWER_KEEPOUT of the camera (floor plane).
-    // Two nose estimates: straight ahead of the anchor, and the posed nose (head turned / bobbing)
-    // carried along by this frame's translation; the one nearer the camera counts.
-    let ex = anchor.position.x + Math.sin(yaw) * noseF - viewerW.x;
-    let ez = anchor.position.z + Math.cos(yaw) * noseF - viewerW.z;
-    const ex2 = nose.x + (anchor.position.x - ax) - viewerW.x;
-    const ez2 = nose.z + (anchor.position.z - az) - viewerW.z;
-    if (ex2 * ex2 + ez2 * ez2 < ex * ex + ez * ez) {
-      ex = ex2;
-      ez = ez2;
-    }
-    const ed = Math.hypot(ex, ez);
-    if (ed < VIEWER_KEEPOUT) {
-      const push = VIEWER_KEEPOUT - ed;
+    // Hard keep-out: the pet never walks its nose within KEEPOUT_HARD of the camera (floor plane).
+    // Only the pet's OWN approach this frame is undone (ed vs edPrev, both against this frame's
+    // camera): a camera moving onto the pet never pushes it, and nothing pushes while it is being
+    // petted or a hand is about to land (else reaching down to pet it shoves it away).
+    const ed = noseViewerDist(
+      anchor.position.x + Math.sin(yaw) * noseF,
+      anchor.position.z + Math.cos(yaw) * noseF,
+      nose.x + (anchor.position.x - ax),
+      nose.z + (anchor.position.z - az),
+    );
+    const ex = keepEx;
+    const ez = keepEz;
+    const petHeld = pets.head.active || pets.body.active || pets.head.dwellStart !== null || pets.body.dwellStart !== null || handHold;
+    if (!petHeld && ed < KEEPOUT_HARD && ed < edPrev) {
+      const push = Math.min(KEEPOUT_HARD - ed, edPrev - ed);
       if (ed > 1e-4) {
         anchor.position.x += (ex / ed) * push;
         anchor.position.z += (ez / ed) * push;
@@ -1416,13 +1492,15 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       desiredW.copy(social.look);
       return 1;
     }
-    if (engagedId !== null) {
+    if (engagedId !== null || activity === "handHold") {
       // A hand right above / behind the eyes would make the head aim flip around: keep the
-      // look target at least a little in front of the eyes.
-      desiredW.copy(engagedPalm);
+      // look target at least a little in front of the eyes. (Holding still for a hand nobody
+      // engaged, e.g. another person's: look at that hand.)
+      const palm = engagedId !== null ? engagedPalm : holdPalm;
+      desiredW.copy(palm);
       const fx = Math.sin(yaw);
       const fz = Math.cos(yaw);
-      const ahead = (engagedPalm.x - eyes.x) * fx + (engagedPalm.z - eyes.z) * fz;
+      const ahead = (palm.x - eyes.x) * fx + (palm.z - eyes.z) * fz;
       if (ahead < 0.15) {
         desiredW.x += fx * (0.15 - ahead);
         desiredW.z += fz * (0.15 - ahead);
@@ -1481,6 +1559,8 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
         return prof.status.handSniff;
       case "handApproach":
         return mode === "stay" ? `${name} sees your hand` : `${name} is coming to your hand`;
+      case "handHold":
+        return handSniffing ? prof.status.handSniff : `${name} is waiting for your hand`;
       case "handLure":
         return prof.status.handLure;
       case "handWatch":
@@ -1602,7 +1682,11 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       // Stalked a moving hand for a while and it stopped: pounce on it (cats).
       if (activity === "handLure") lureTime += dt;
       else if (engagedId === null) lureTime = 0;
-      if (wasLuring && (activity === "handApproach" || activity === "handSniff") && lureTime > LURE_POUNCE_S) {
+      // (Holding still for a hand counts only once it has stopped: a hand still moving in to pet
+      // must not be pounced on.)
+      const lureStopped =
+        activity === "handApproach" || activity === "handSniff" || (activity === "handHold" && engagedId !== null && engagedSpeed < HAND_STILL);
+      if (wasLuring && lureStopped && lureTime > LURE_POUNCE_S) {
         lureTime = 0;
         if (Math.random() < prof.pounceChance) autoTrick("pounce");
       }
@@ -1652,7 +1736,7 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       // ---- Sniff
       let sniffT = 0;
       if (handSniffing) sniffT = 1;
-      else if (activity === "handApproach" && engagedPalm.distanceTo(nose) < 0.45) sniffT = 0.4;
+      else if ((activity === "handApproach" || activity === "handHold") && (engagedId !== null ? engagedPalm : holdPalm).distanceTo(nose) < 0.45) sniffT = 0.4;
       else if (activity === "free" && freeActivity === "sniff" && v < 0.1) sniffT = 1;
       else if (activity === "social" && social && v < 0.1) sniffT = social.sniff;
       else if (activity === "follow" && now < idleSniffUntil && v < 0.1 && postureCmd === "stand") sniffT = 0.8;
@@ -1661,7 +1745,7 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       // ---- Excitement
       let exT = EXCITE_BASE;
       if (activity === "follow" && v > V_TROT * 0.9) exT = 0.6;
-      if (engagedId !== null && !engagedNear) exT = 0.7;
+      if ((engagedId !== null && !engagedNear) || activity === "handHold") exT = 0.7;
       if (now < listenUntil) exT = Math.max(exT, 0.6);
       if (activity === "social") exT = 0.85;
       if (headOn || bodyOn) exT = 0.95;
