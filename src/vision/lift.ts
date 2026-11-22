@@ -380,6 +380,7 @@ export function liftHand(
   let Zc = c ? c.Z : null;
 
   // Measured depth, sanity-checked against the size-based estimate.
+  let measuredUsed = false;
   if (ctx.cam.depthAt) {
     const vals: number[] = [];
     for (const i of DEPTH_IDX) {
@@ -390,6 +391,7 @@ export function liftHand(
     const measured = median(vals);
     if (measured != null && (Zc == null || Math.abs(measured - Zc) / Zc <= DEPTH_AGREEMENT)) {
       Zc = measured;
+      measuredUsed = true;
       prevPalm = undefined; // measured depth needs no smoothing
     }
   }
@@ -444,6 +446,10 @@ export function liftHand(
     age: 0,
     personId: null,
     uv: palmUV(h.landmarks),
+    // The detection frame's camera (camRay refreshed ctx.origin above); contact tests widen
+    // along the ray from here when the depth is size-based.
+    origin: origin.clone(),
+    depthMeasured: measuredUsed,
   };
 }
 
