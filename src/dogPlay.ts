@@ -184,6 +184,12 @@ export interface DogPlay {
   handOcclusion: boolean;
   /** A mode-specific message for the status chip (null clears it). */
   setNote(text: string | null): void;
+  /** A tap on the floor (world point). True if it was taken (lining up with friends): don't send the pet. */
+  floorTap(point: THREE.Vector3): boolean;
+  /** False while the camera isn't world-tracked: no lining up with friends. */
+  alignable: boolean;
+  /** The world origin moved (tracker re-zeroed). */
+  worldReset(): void;
   readonly perception: Perception;
   dispose(): void;
 }
@@ -748,6 +754,14 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       if (text !== note) noteAge = 0;
       note = text;
     },
+    floorTap: (point) => !!party?.floorTap(point),
+    get alignable() {
+      return party?.alignable ?? false;
+    },
+    set alignable(on: boolean) {
+      if (party) party.alignable = on;
+    },
+    worldReset: () => party?.worldReset(),
     dispose() {
       if (disposed) return;
       disposed = true;

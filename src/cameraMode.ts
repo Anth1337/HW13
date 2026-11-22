@@ -434,6 +434,7 @@ export async function startCameraMode(
     function enterFallback() {
       if (!tracked) return;
       tracked = false;
+      play.alignable = false;
       tracker?.dispose();
       tracker = null;
       reticle.reset();
@@ -451,6 +452,7 @@ export async function startCameraMode(
     play.handOcclusion = true; // no depth API in camera mode
     play.ensureDetector();
     if (!tracked) {
+      play.alignable = false;
       setFloor(fallbackFloorY);
       placeAt(new THREE.Vector3(0, fallbackFloorY, -DOG_DISTANCE), true);
       if (permission === "denied") flashHint(DENIED_HINT, 6);
@@ -514,6 +516,7 @@ export async function startCameraMode(
       }
       if (!play.brain) return;
       hitPoint.y = floorY;
+      if (tracked && play.floorTap(hitPoint)) return;
       play.brain.goTo(hitPoint);
       showMarker(hitPoint);
       navigator.vibrate?.(10);
@@ -664,6 +667,7 @@ export async function startCameraMode(
       video.play().catch(() => {});
       if (!tracked || !tracker) return;
       tracker.recenter();
+      play.worldReset();
       // The camera pose only refreshes in frame(): move it to the re-zeroed origin now so the pet
       // placed below faces the camera, not where it was before the gap.
       camera.position.set(0, tracker.cameraHeight + floorY, 0);

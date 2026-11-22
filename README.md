@@ -99,7 +99,13 @@ Every phone brings its own pet to the party, and everyone sees everyone's pets.
 
 What is shared: each pet's look and name, where it is and what it's doing (about 10 updates a second, only while someone else is in the room). The camera image and audio never leave the phone. The room server only relays messages between the phones in a room and stores nothing.
 
-**Limit:** browsers can't share AR anchors between phones, so each phone shows friends' pets around its own pet rather than at the same real-world spot. For a demo, have everyone place their pet on the same spot (the table, or the printed QR code) and it looks shared.
+**Line up (📍)** so pets stand where they really are. Browsers can't share AR anchors between phones, so by default each phone shows friends' pets around its own pet. To share the room:
+
+1. Agree on two spots on the floor about 1–2 m apart (two corners of a rug, two table legs).
+2. Everyone taps **📍**, then taps spot 1, then spot 2, in the same order.
+3. Two orange rings mark the spots for a few seconds so you can check them.
+
+Between two lined-up phones a friend's pet is drawn at its real spot in the room, and meetings happen there too. A friend who hasn't lined up still stands next to your pet as before. The distance between the two spots is the unit, so an iPhone whose scale is off (it guesses the phone's height) still lands on the right spots. Taps are accurate to roughly 5–10 cm, which gives about 10–20 cm at a few metres. If an iPhone drifts, or its tracking restarts (coming back to the app), tap 📍 again. `npm run check:align` checks the math.
 
 ### Voice commands
 

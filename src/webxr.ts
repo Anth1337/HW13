@@ -294,6 +294,7 @@ export async function startARSession(renderer: THREE.WebGLRenderer, ui: ARUI, on
       return;
     }
     tap.point.y = floorY;
+    if (play.floorTap(tap.point)) return;
     play.brain!.goTo(tap.point);
     showMarker(tap.point);
     navigator.vibrate?.(10);

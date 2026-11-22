@@ -2,7 +2,7 @@ import * as THREE from "three";
 import type { PetCharacter, PetZones, TrickKind } from "../dog/types";
 import { petGaitInfo } from "../models/pet";
 import type { PetCard } from "./protocol";
-import { applyControls, lerp, lerpAngle, wrapAngle, type PetState } from "./sync";
+import { applyControls, fromShared, lerp, lerpAngle, wrapAngle, type PetState, type SharedFrame } from "./sync";
 
 /*
  * A friend's pet on this phone: their model, posed every frame from their state snapshots,
@@ -123,8 +123,12 @@ export class RemotePet {
     return started;
   }
 
-  /** Pose for now, standing in `slot` (x right, z towards the viewer, metres) of `stage`. */
-  update(dt: number, nowMs: number, stage: Stage, slotX: number, slotZ: number): void {
+  /**
+   * Pose for now, standing in `slot` (x right, z towards the viewer, metres) of `stage`; or, when
+   * this phone and the owner are both lined up (`shared` here, `w` in the snapshots), where the
+   * pet really is in the room.
+   */
+  update(dt: number, nowMs: number, stage: Stage, slotX: number, slotZ: number, shared: SharedFrame | null): void {
     const n = this.snaps.length;
     if (n === 0 || this.clockOffset === null) return;
     const renderT = nowMs - this.clockOffset - INTERP_DELAY_MS;
@@ -164,17 +168,25 @@ export class RemotePet {
     c.petBody = Math.max(c.petBody, this.body);
     c.excitement = Math.max(c.excitement, Math.max(this.head, this.body));
 
-    // Owner's offset from their placement point, squeezed into WANDER_RADIUS around the slot.
-    const rx = lerp(a.x, b.x, u);
-    const rz = lerp(a.z, b.z, u);
-    const r = Math.hypot(rx, rz);
-    const squeeze = r > 1e-6 ? (WANDER_RADIUS * Math.tanh(r / WANDER_RADIUS)) / r : 1;
-    const ox = slotX + rx * squeeze;
-    const oz = slotZ + rz * squeeze;
-    const cs = Math.cos(stage.yaw);
-    const sn = Math.sin(stage.yaw);
-    this.anchor.position.set(stage.x + cs * ox + sn * oz, stage.y, stage.z - sn * ox + cs * oz);
-    this.anchor.rotation.set(0, stage.yaw + lerpAngle(a.h, b.h, u), 0);
+    const aw = a.w;
+    const bw = b.w;
+    if (shared && aw && bw) {
+      // Lined up: the real spot, on this phone's floor.
+      fromShared(shared, lerp(aw[0], bw[0], u), lerp(aw[1], bw[1], u), this.anchor.position).y = stage.y;
+      this.anchor.rotation.set(0, shared.yaw + lerpAngle(aw[2], bw[2], u), 0);
+    } else {
+      // Owner's offset from their placement point, squeezed into WANDER_RADIUS around the slot.
+      const rx = lerp(a.x, b.x, u);
+      const rz = lerp(a.z, b.z, u);
+      const r = Math.hypot(rx, rz);
+      const squeeze = r > 1e-6 ? (WANDER_RADIUS * Math.tanh(r / WANDER_RADIUS)) / r : 1;
+      const ox = slotX + rx * squeeze;
+      const oz = slotZ + rz * squeeze;
+      const cs = Math.cos(stage.yaw);
+      const sn = Math.sin(stage.yaw);
+      this.anchor.position.set(stage.x + cs * ox + sn * oz, stage.y, stage.z - sn * ox + cs * oz);
+      this.anchor.rotation.set(0, stage.yaw + lerpAngle(a.h, b.h, u), 0);
+    }
     if (this.meet && !this.meet.stand && !this.walk) this.lookAtMeet(this.meet);
     else if (this.meet || this.walk) this.walkMeet(dt);
 
