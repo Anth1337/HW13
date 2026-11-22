@@ -35,6 +35,11 @@ export type PetEvent =
   | { k: "cmd"; c: DogCommand; to?: string }
   /** The sender's hand is on `to`'s pet; repeated every PET_REPEAT_MS while it stays there. */
   | { k: "pet"; to: string; z: "head" | "body" }
+  /**
+   * The sender's pet goes to say hi to `to`'s pet (party.ts plays it on every phone). `stay`: the
+   * other pet is sitting / lying, so only the sender's pet walks over.
+   */
+  | { k: "meet"; to: string; stay: boolean }
   /** The sender left AR: their pet disappears now instead of after a timeout. */
   | { k: "away" };
 
@@ -116,6 +121,7 @@ export function readEvent(d: unknown): PetEvent | null {
     return e.to === undefined ? { k: "cmd", c: e.c as DogCommand } : { k: "cmd", c: e.c as DogCommand, to: e.to as string };
   }
   if (e.k === "pet" && typeof e.to === "string" && (e.z === "head" || e.z === "body")) return { k: "pet", to: e.to, z: e.z };
+  if (e.k === "meet" && typeof e.to === "string" && typeof e.stay === "boolean") return { k: "meet", to: e.to, stay: e.stay };
   if (e.k === "away") return { k: "away" };
   return null;
 }

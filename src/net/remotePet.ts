@@ -1,7 +1,8 @@
 import * as THREE from "three";
 import type { PetCharacter, PetZones, TrickKind } from "../dog/types";
+import { petGaitInfo } from "../models/pet";
 import type { PetCard } from "./protocol";
-import { applyControls, lerp, lerpAngle, type PetState } from "./sync";
+import { applyControls, lerp, lerpAngle, wrapAngle, type PetState } from "./sync";
 
 /*
  * A friend's pet on this phone: their model, posed every frame from their state snapshots,
@@ -24,6 +25,23 @@ const OFFSET_CREEP_MS = 0.05;
 /** Where friends' pets gather on this phone: this phone's pet's placement (floor point + heading). */
 export type Stage = { x: number; y: number; z: number; yaw: number };
 
+/**
+ * Meeting another pet (party.ts), world space: this phone walks the pet there itself, because the
+ * owner's movement happened in the owner's own layout. Null: walk back to the replayed spot.
+ */
+export type MeetPose = {
+  /** Null: it stays put (sitting / lying) and only looks at the visitor. */
+  stand: THREE.Vector3 | null;
+  face: THREE.Vector3;
+  look: THREE.Vector3;
+  sniff: number;
+};
+
+const MEET_ACCEL = 1.5; // m/s²
+const MEET_TURN = 3.5; // rad/s
+/** Running speed as a multiple of walking speed (the brain's V_RUN / V_WALK). */
+const V_RUN_X = 2 / 0.6;
+
 export class RemotePet {
   readonly anchor = new THREE.Group();
   /** Left AR (an "away" event); cleared by the next snapshot. */
@@ -41,6 +59,11 @@ export class RemotePet {
   private bodyUntil = -Infinity;
   private head = 0;
   private body = 0;
+  /** Set by party.ts while this pet meets another one. */
+  meet: MeetPose | null = null;
+  /** Where this phone walks the pet while meeting / walking back (null = replayed from snapshots). */
+  private walk: { x: number; z: number; yaw: number; v: number; phase: number } | null = null;
+  private readonly vWalk: number;
 
   constructor(
     readonly card: PetCard,
@@ -59,6 +82,8 @@ export class RemotePet {
     this.blob.scale.setScalar(Math.max(0.15, model.length * 0.42));
     this.blob.position.y = 0.002;
     this.anchor.add(this.blob);
+
+    this.vWalk = 0.6 * Math.min(1.15, Math.max(0.45, model.height / 0.57)); // the brain's walking speed
 
     this.tag = makeTag(name);
     this.tag.position.y = model.height + 0.1;
@@ -81,6 +106,13 @@ export class RemotePet {
   reset(): void {
     this.snaps.length = 0;
     this.clockOffset = null;
+    this.stopMeet();
+  }
+
+  /** Drop any meeting walk at once: the pet goes back to where its snapshots put it (hidden, re-staged…). */
+  stopMeet(): void {
+    this.meet = null;
+    this.walk = null;
   }
 
   /** Someone's hand is on it. True when this starts a new touch (time for hearts). */
@@ -143,9 +175,85 @@ export class RemotePet {
     const sn = Math.sin(stage.yaw);
     this.anchor.position.set(stage.x + cs * ox + sn * oz, stage.y, stage.z - sn * ox + cs * oz);
     this.anchor.rotation.set(0, stage.yaw + lerpAngle(a.h, b.h, u), 0);
+    if (this.meet && !this.meet.stand && !this.walk) this.lookAtMeet(this.meet);
+    else if (this.meet || this.walk) this.walkMeet(dt);
 
     this.clock += dt;
     this.model.update(this.clock);
+  }
+
+  /** Overrides the replayed position, heading, gait and look while meeting, then walks back. */
+  private walkMeet(dt: number): void {
+    const home = this.anchor.position;
+    const w = (this.walk ??= { x: home.x, z: home.z, yaw: this.anchor.rotation.y, v: 0, phase: this.model.controls.gait.phase });
+    const m = this.meet;
+    const tx = m?.stand ? m.stand.x : home.x;
+    const tz = m?.stand ? m.stand.z : home.z;
+    const dx = tx - w.x;
+    const dz = tz - w.z;
+    const d = Math.hypot(dx, dz);
+    const c = this.model.controls; // already filled from the snapshots
+    // Head where it walks; once there face the other pet (or, back home, the replayed heading).
+    const yawT = d > 0.08 ? Math.atan2(dx, dz) : m ? Math.atan2(m.face.x - w.x, m.face.z - w.z) : this.anchor.rotation.y;
+    const err = wrapAngle(yawT - w.yaw);
+    w.yaw = wrapAngle(w.yaw + Math.sign(err) * Math.min(Math.abs(err), MEET_TURN * dt));
+    // Like the brain: walk short hops, trot / run further; turn mostly on the spot (no moonwalking).
+    // On the way back it hurries a little, so it catches up with a replayed spot that keeps moving.
+    const far = Math.min(1, Math.max(0, (d - 1) / 2));
+    const vMax = this.vWalk * (1 + (V_RUN_X - 1) * far * far * (3 - 2 * far)) * (m ? 1 : 1.5);
+    let vT = d > 0.03 ? Math.min(vMax, d * (m ? 2 : 4)) * Math.max(0, Math.cos(err)) : 0;
+    // The owner's pet stopped for a trick, a sit or a lie: stand still for it here too (or, on the
+    // way back, rejoin its replayed spot instead of gliding there in that pose).
+    if (c.trick || c.sit > 0.3 || c.lie > 0.3) {
+      if (!m) {
+        this.walk = null;
+        return;
+      }
+      vT = 0;
+    }
+    w.v = vT > w.v ? Math.min(vT, w.v + MEET_ACCEL * dt) : Math.max(vT, w.v - MEET_ACCEL * 1.5 * dt);
+    if (Math.cos(err) < 0) w.v = vT; // target behind it: stop and turn, never slide backwards
+    const step = Math.min(d, w.v * dt);
+    if (d > 1e-6) {
+      w.x += (dx / d) * step;
+      w.z += (dz / d) * step;
+    }
+
+    if (!m && d < 0.03 && Math.abs(err) < 0.05) {
+      this.walk = null; // back on the replayed spot: snapshots drive it again
+      return;
+    }
+
+    // Normalised gait speed for this ground speed (as the brain's gaitSpeedFor: 0.4 walk, 0.7 trot, 1 run).
+    const vw = this.vWalk;
+    const gs =
+      w.v <= vw ? (0.4 * w.v) / vw : w.v <= 2 * vw ? 0.4 + (0.3 * (w.v - vw)) / vw : Math.min(1.1, 0.7 + (0.3 * (w.v - 2 * vw)) / ((V_RUN_X - 2) * vw));
+    if (gs > 0.01) {
+      const stride = petGaitInfo(this.model, Math.max(gs, 0.3)).stride * Math.min(1, gs / 0.3);
+      w.phase += (dt * w.v) / Math.max(stride, 1e-3);
+    }
+    c.gait.phase = w.phase;
+    c.gait.speed = gs;
+    c.gait.turn = 0;
+    this.anchor.position.set(w.x, home.y, w.z);
+    this.anchor.rotation.set(0, w.yaw, 0);
+    if (m) this.lookAtMeet(m, w.v < 0.1);
+  }
+
+  /** Looks at the other pet from wherever the pet now stands (and sniffs it once stopped). */
+  private lookAtMeet(m: MeetPose, stopped = true): void {
+    const c = this.model.controls;
+    if (stopped) c.sniff = Math.max(c.sniff, m.sniff);
+    c.excitement = Math.max(c.excitement, 0.85);
+    this.anchor.updateMatrixWorld(true);
+    c.lookAt = this.model.root.worldToLocal(this.look.copy(m.look));
+    c.lookWeight = 1;
+  }
+
+  /** The owner's pet is sitting or lying (it stays put when another pet comes to say hi). */
+  get resting(): boolean {
+    const s = this.snaps[this.snaps.length - 1];
+    return !!s && (s.c[0] > 0.5 || s.c[1] > 0.5);
   }
 
   zones(out: PetZones): PetZones {

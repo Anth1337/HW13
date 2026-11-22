@@ -237,6 +237,8 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
       syncButtons();
     },
     tricks: labels.tricks,
+    social: (s) => brain?.social(s),
+    sociable: () => !!brain?.sociable,
   });
 
   const commandButtons: { button: HTMLButtonElement; cmd: () => DogCommand }[] = [

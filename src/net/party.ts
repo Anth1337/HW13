@@ -1,12 +1,12 @@
 import * as THREE from "three";
-import { TRICK_LABEL, type DogCommand, type PetCharacter, type PetZones, type TrickKind } from "../dog/types";
+import { TRICK_LABEL, type DogCommand, type PetCharacter, type PetSocial, type PetZones, type TrickKind } from "../dog/types";
 import type { PerceivedHand, Perception } from "../vision/types";
 import { currentRoom } from "./index";
 import { createPetModel, localPetCard, petBuzz, petName } from "./kinds";
-import { RemotePet, type Stage } from "./remotePet";
+import { RemotePet, type MeetPose, type Stage } from "./remotePet";
 import type { Peer } from "./room";
 import { PET_REPEAT_MS, readEvent, readState, wrapAngle, writeState, type PetEvent } from "./sync";
-import { clearFeed, feed, partyButton } from "./ui";
+import { clearFeed, feed, partyButton, sayHiButton } from "./ui";
 
 /*
  * Multiplayer inside one AR / camera session (dogPlay.ts creates it when the page is in a room):
@@ -17,6 +17,10 @@ import { clearFeed, feed, partyButton } from "./ui";
  *    else's; a friend's hand on this phone's pet does the same here
  *  - the feed (who joined, petting, tricks) and the 🎉 button: every pet in the room does the
  *    same trick at once
+ *  - pets meeting each other (a "meet" event, started by an idle pet now and then or the 🐾
+ *    button): the two walk up nose to nose, sniff, then each does a trick that suits the other's
+ *    species. Every phone plays it from its own layout (friends' pets stand in different spots on
+ *    each phone): this phone's pet walks there with its brain, friends' pets with RemotePet.meet.
  */
 
 export interface PartyLink {
@@ -38,6 +42,10 @@ export interface PartyHooks {
   command(cmd: DogCommand): void;
   /** This phone's pet's three tricks (the 🎉 button picks one). */
   tricks: readonly TrickKind[];
+  /** This phone's pet meets another pet (null = done). */
+  social(s: PetSocial | null): void;
+  /** This phone's pet is idle enough to go and say hi by itself. */
+  sociable(): boolean;
 }
 
 const SEND_EVERY_MS = 100;
@@ -68,7 +76,37 @@ const SLOTS: [number, number][] = [
 ];
 const SHOWN_COMMANDS: Partial<Record<DogCommand, string>> = { ...TRICK_LABEL, sit: "Sit", lie: "Lie down" };
 
+/** Meeting timeline (s from the start): walk over, sniff, tricks, done (everyone goes back). */
+const MEET_SNIFF_S = 3.5;
+const MEET_TRICK_S = 6;
+const MEET_END_S = 9.5;
+/** An idle pet goes to say hi to a friend's pet after this long (random in the range). */
+const MEET_AUTO_MIN_S = 25;
+const MEET_AUTO_MAX_S = 45;
+/** Gap between the two noses (m). */
+const NOSE_GAP = 0.04;
+/** Anchor → nose tip as a share of nose-to-rump length (the head sticks out past the torso: dog 0.63, cat 0.60). */
+const NOSE_REACH = 0.62;
+/** [initiator's trick, other pet's trick] by [initiator species][other species]. */
+const MEET_TRICKS: Record<string, Record<string, [TrickKind, TrickKind]>> = {
+  dog: { dog: ["spin", "jump"], cat: ["jump", "pounce"] },
+  cat: { dog: ["pounce", "jump"], cat: ["stretch", "groom"] },
+};
+
 type Touch = { zone: "head" | "body"; held: number; idle: number; active: boolean; sentMs: number };
+
+/** Two pets meeting, as played on this phone. Ids are room ids (this phone's pet: room.selfId). */
+type Meet = {
+  a: string;
+  b: string;
+  /** b stays put (sitting / lying): only a walks over. */
+  stay: boolean;
+  startMs: number;
+  tricked: boolean;
+  /** Where each pet goes on this phone (stand fixed at the start, the rest updated per frame). */
+  poseA: MeetPose;
+  poseB: MeetPose;
+};
 
 export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLink | null {
   const joined = currentRoom();
@@ -95,6 +133,11 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   let disposed = false;
   const zones: PetZones = { head: new THREE.Sphere(), body: new THREE.Sphere() };
   const point = new THREE.Vector3();
+  const meets: Meet[] = [];
+  const social: PetSocial = { stand: null, face: new THREE.Vector3(), look: new THREE.Vector3(), sniff: 0, status: "" };
+  let socialOn = false;
+  let nextAutoMeetMs = performance.now() + rand(MEET_AUTO_MIN_S, MEET_AUTO_MAX_S) * 1000;
+  const lastMetMs = new Map<string, number>();
 
   const myName = () => petName(localPetCard());
   const ownerOf = (peer: Peer) => `${petName(peer.pet)}'s human`;
@@ -123,6 +166,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
   }
 
   function forget(id: string) {
+    for (const m of [...meets]) if (m.a === id || m.b === id) endMeet(m);
     pets.get(id)?.dispose();
     pets.delete(id);
     slots.delete(id);
@@ -168,9 +212,154 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       }
       return;
     }
+    if (e.k === "meet") {
+      startMeet(from.id, e.to, e.stay, now);
+      return;
+    }
     // "away": they went back to the creator.
     from.lastStateMs = -Infinity;
     pets.get(from.id)?.reset();
+    for (const m of [...meets]) if (m.a === from.id || m.b === from.id) endMeet(m);
+  }
+
+  // ---- Pets meeting each other ---------------------------------------------------------
+
+  const self = () => room.selfId;
+  const nameOf = (id: string) => (id === self() ? myName() : petName(pets.get(id)?.card ?? null));
+  const busy = (id: string) => meets.some((m) => m.a === id || m.b === id);
+  const speciesOf = (id: string) => (id === self() ? dog?.species : pets.get(id)?.model.species);
+  const lengthOf = (id: string) => (id === self() ? dog?.length : pets.get(id)?.model.length) ?? 0.5;
+
+  /** Floor position of a pet as shown on this phone, or null if it isn't shown. */
+  function whereIs(id: string, out: THREE.Vector3): THREE.Vector3 | null {
+    if (id === self()) return dog && anchor ? out.copy(anchor.position) : null;
+    const pet = pets.get(id);
+    return pet?.anchor.visible ? out.copy(pet.anchor.position) : null;
+  }
+  function eyesOf(id: string, out: THREE.Vector3): THREE.Vector3 | null {
+    if (id === self()) return dog ? dog.getEyesWorld(out) : null;
+    const pet = pets.get(id);
+    return pet?.anchor.visible ? pet.model.getEyesWorld(out) : null;
+  }
+
+  /** Starts a meeting on this phone (both pets shown and free). True if it started. */
+  function startMeet(a: string, b: string, stay: boolean, now: number): boolean {
+    if (a === b || busy(a) || busy(b)) return false;
+    const pa = whereIs(a, new THREE.Vector3());
+    const pb = whereIs(b, new THREE.Vector3());
+    if (!pa || !pb) return false;
+    const dir = new THREE.Vector3(pb.x - pa.x, 0, pb.z - pa.z);
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+    dir.normalize();
+    // Noses meet half way (or at the resting pet); each anchor stands its nose reach behind them.
+    const ra = lengthOf(a) * NOSE_REACH + NOSE_GAP / 2;
+    const rb = lengthOf(b) * NOSE_REACH + NOSE_GAP / 2;
+    const noses = stay ? pb.clone().addScaledVector(dir, -rb) : pa.clone().lerp(pb, 0.5).addScaledVector(dir, (ra - rb) / 2);
+    const pose = (stand: THREE.Vector3 | null): MeetPose => ({ stand, face: new THREE.Vector3(), look: new THREE.Vector3(), sniff: 0 });
+    meets.push({
+      a,
+      b,
+      stay,
+      startMs: now,
+      tricked: false,
+      poseA: pose(noses.clone().addScaledVector(dir, -ra)),
+      poseB: pose(stay ? null : noses.clone().addScaledVector(dir, rb)), // null: a resting pet stays put
+    });
+    if (a === self()) lastMetMs.set(b, now);
+    else if (b === self()) lastMetMs.set(a, now);
+    feed(`🐾 ${nameOf(a)} is saying hi to ${nameOf(b)}`);
+    return true;
+  }
+
+  function endMeet(m: Meet) {
+    meets.splice(meets.indexOf(m), 1);
+    for (const id of [m.a, m.b]) {
+      const pet = pets.get(id);
+      if (pet) pet.meet = null;
+    }
+  }
+
+  /** This phone's pet goes to say hi to `to`'s pet (the 🐾 button, or by itself). */
+  function sayHi(to: string, now: number): boolean {
+    const me = self();
+    const pet = pets.get(to);
+    if (!me || !pet) return false;
+    const stay = pet.resting;
+    if (!startMeet(me, to, stay, now)) return false;
+    room.sendEvent({ k: "meet", to, stay } satisfies PetEvent);
+    return true;
+  }
+
+  /** The friend's pet to say hi to: shown, free, met least recently (nearest among never-met). */
+  function pickFriend(): string | null {
+    let best: string | null = null;
+    let bestKey = Infinity;
+    for (const [id, pet] of pets) {
+      if (!pet.anchor.visible || busy(id) || !anchor) continue;
+      const key = (lastMetMs.get(id) ?? -1e12) + pet.anchor.position.distanceTo(anchor.position);
+      if (key < bestKey) {
+        bestKey = key;
+        best = id;
+      }
+    }
+    return best;
+  }
+
+  function updateMeets(now: number) {
+    const me = self();
+    let mine = false;
+    for (const m of [...meets]) {
+      const t = (now - m.startMs) / 1000;
+      if (t >= MEET_END_S || !whereIs(m.a, point) || !whereIs(m.b, point)) {
+        endMeet(m);
+        continue;
+      }
+      const sniff = t >= MEET_SNIFF_S ? 0.8 : 0;
+      const sides: [string, string, MeetPose][] = [
+        [m.a, m.b, m.poseA],
+        [m.b, m.a, m.poseB],
+      ];
+      for (const [id, other, pose] of sides) {
+        whereIs(other, pose.face);
+        eyesOf(other, pose.look);
+        pose.sniff = sniff;
+        if (id === me) {
+          mine = true;
+          social.stand = pose.stand;
+          social.face.copy(pose.face);
+          social.look.copy(pose.look);
+          social.sniff = sniff;
+          social.status = `Saying hi to ${nameOf(other)}`;
+        } else {
+          const pet = pets.get(id); // walks over, or (resting) only looks at the visitor
+          if (pet) pet.meet = pose;
+        }
+      }
+      if (!m.tricked && t >= MEET_TRICK_S) {
+        m.tricked = true;
+        const sa = speciesOf(m.a);
+        const sb = speciesOf(m.b);
+        const tricks = sa && sb ? MEET_TRICKS[sa]?.[sb] : undefined;
+        // Not while someone pets this phone's pet: it stayed for the pats, a trick would break them off.
+        const petted = !!dog && dog.controls.petHead + dog.controls.petBody > 0.1;
+        if (tricks && !petted && m.a === me) hooks.command(tricks[0]);
+        if (tricks && !petted && m.b === me && !m.stay) hooks.command(tricks[1]);
+      }
+    }
+    if (mine) {
+      hooks.social(social);
+      socialOn = true;
+    } else if (socialOn) {
+      hooks.social(null);
+      socialOn = false;
+    }
+
+    // Now and then an idle pet goes to say hi by itself.
+    if (now >= nextAutoMeetMs) {
+      nextAutoMeetMs = now + rand(MEET_AUTO_MIN_S, MEET_AUTO_MAX_S) * 1000;
+      const to = me && dog && !busy(me) && hooks.sociable() ? pickFriend() : null;
+      if (to) sayHi(to, now);
+    }
   }
 
   cleanups.push(
@@ -213,6 +402,17 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
     navigator.vibrate?.(20);
   });
   if (party) party.el.disabled = true;
+
+  const hi = sayHiButton(() => {
+    const me = self();
+    if (!dog) return;
+    if (!me) return void feed(room.status === "full" ? `${roomName} is full: playing solo` : "📡 Connecting to the room…");
+    if (busy(me)) return void feed(`🐾 ${myName()} is already saying hi`);
+    const to = pickFriend();
+    if (!to) return void feed(room.peers.size ? "🐾 No friend's pet to say hi to right now" : "🐾 Invite friends so their pets can meet yours");
+    if (sayHi(to, performance.now())) navigator.vibrate?.(12);
+  });
+  if (hi) hi.el.disabled = true;
 
   const friends = room.peers.size;
   const roomName = `👥 Room ${room.code.toUpperCase()}`;
@@ -283,6 +483,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       anchor = newAnchor;
       stage = null;
       if (party) party.el.disabled = false;
+      if (hi) hi.el.disabled = false;
     },
 
     beforeDogUpdate(dt) {
@@ -304,7 +505,12 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
 
       if (dog && anchor) {
         const p = anchor.position;
-        if (!stage || p.distanceTo(lastPos) > TELEPORT_M) stage = { x: p.x, y: p.y, z: p.z, yaw: anchor.rotation.y };
+        if (!stage || p.distanceTo(lastPos) > TELEPORT_M) {
+          stage = { x: p.x, y: p.y, z: p.z, yaw: anchor.rotation.y };
+          // Re-placed: friends' pets jump to their new spots, so meetings planned around the old ones end.
+          for (const m of [...meets]) endMeet(m);
+          for (const pet of pets.values()) pet.stopMeet();
+        }
         lastPos.copy(p);
         if (now - lastSendMs >= SEND_EVERY_MS) {
           lastSendMs = now;
@@ -320,6 +526,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
         const peer = room.peers.get(id);
         const live = !!peer && !!stage && !pet.away && now - peer.lastStateMs < STALE_MS;
         pet.anchor.visible = live;
+        if (!live) pet.stopMeet(); // shows up again where its owner has it, not at an old meeting spot
         if (!live || !stage) continue;
         const [sx, sz] = SLOTS[slots.get(id) ?? 0];
         pet.update(dt, now, stage, sx, sz);
@@ -329,6 +536,7 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
         }
       }
 
+      updateMeets(now);
       petFriends(dt, now, perception.hands);
     },
 
@@ -342,10 +550,18 @@ export function createPartyLink(scene: THREE.Scene, hooks: PartyHooks): PartyLin
       room.sendEvent({ k: "away" } satisfies PetEvent);
       for (const off of cleanups) off();
       for (const id of [...pets.keys()]) forget(id);
+      meets.length = 0;
+      if (socialOn) hooks.social(null);
+      socialOn = false;
       party?.remove();
+      hi?.remove();
       clearFeed();
       dog = null;
       anchor = null;
     },
   };
+}
+
+function rand(a: number, b: number): number {
+  return a + Math.random() * (b - a);
 }

@@ -196,6 +196,23 @@ export interface PetCharacter extends Character {
   dispose(): void;
 }
 
+/**
+ * Another pet this one is meeting (src/net/party.ts). The vectors are world space and read
+ * every frame, so the caller may move them in place.
+ */
+export interface PetSocial {
+  /** Where to stand (floor x/z), or null to stay put and only turn / look. */
+  stand: THREE.Vector3 | null;
+  /** Face this point once there. */
+  face: THREE.Vector3;
+  /** Look at this point (the other pet's eyes). */
+  look: THREE.Vector3;
+  /** 0..1 nose-to-nose sniffing. */
+  sniff: number;
+  /** Status line, e.g. "Saying hi to Mochi". */
+  status: string;
+}
+
 /* ======================================================================================
  * Brain: behaviour, movement, commands
  * ====================================================================================== */
@@ -271,6 +288,13 @@ export interface DogBrain {
   readonly status: string;
   /** Id of the FACE the dog is making eye contact with, or null. Only ever one. */
   readonly eyeContactWith: number | null;
+  /**
+   * Meet another pet (null = done): walks to `stand`, faces and looks at the other pet, sniffs.
+   * Ranks below tricks and petting, above hands, come / goTo and the modes; the mode is unchanged after.
+   */
+  social(s: PetSocial | null): void;
+  /** Free to go and say hi to another pet on its own: following or roaming, no hand, trick, come or goTo. */
+  readonly sociable: boolean;
   /** Fires when a petting session starts (hearts / haptics). Returns an unsubscribe. */
   onPetStart(fn: (zone: "head" | "body", worldPoint: THREE.Vector3) => void): () => void;
 }

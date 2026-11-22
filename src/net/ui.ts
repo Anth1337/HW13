@@ -179,12 +179,21 @@ export function clearFeed(): void {
 
 /** The 🎉 button in the AR tools row (taps on it never reach the AR scene). Null if the row is missing. */
 export function partyButton(onClick: () => void): { el: HTMLButtonElement; remove(): void } | null {
+  return toolButton("🎉", "Party trick", "Party trick: every pet in the room does it", onClick);
+}
+
+/** The 🐾 button: this phone's pet goes to say hi to a friend's pet. */
+export function sayHiButton(onClick: () => void): { el: HTMLButtonElement; remove(): void } | null {
+  return toolButton("🐾", "Say hi to a friend's pet", "Say hi: your pet goes to meet a friend's pet", onClick);
+}
+
+function toolButton(icon: string, label: string, title: string, onClick: () => void): { el: HTMLButtonElement; remove(): void } | null {
   const tools = document.querySelector("#ar-controls .ar-tools");
   if (!tools) return null;
-  const b = el("button", "btn btn-small net-party", "🎉");
+  const b = el("button", "btn btn-small net-party", icon);
   b.type = "button";
-  b.title = "Party trick: every pet in the room does it";
-  b.setAttribute("aria-label", "Party trick");
+  b.title = title;
+  b.setAttribute("aria-label", label);
   b.addEventListener("click", onClick);
   tools.prepend(b);
   return {

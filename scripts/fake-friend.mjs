@@ -1,5 +1,6 @@
 // A scripted friend for trying multiplayer without a second phone: Mochi the corgi joins a room,
-// walks in circles, sits, does tricks (they show in your feed) and pets your dog now and then.
+// walks in circles, sits, does tricks (they show in your feed), pets your pet now and then and once a
+// cycle walks over to say hi to it (it also joins in when your pet comes to say hi).
 //
 //   npm run fake-friend -- <invite link> [minutes]                e.g. https://hw13-pets.you.workers.dev/?room=abcd
 //   npm run fake-friend -- <room code> [server] [minutes]         server defaults to http://127.0.0.1:8787 (npm run dev:rooms)
@@ -32,6 +33,16 @@ const wsURL = `${server.replace(/\/+$/, "").replace(/^http/, "ws")}/party/${room
 
 const ws = new WebSocket(wsURL);
 const peers = new Map(); // id -> pet name
+const kinds = new Map(); // id -> pet kind ("dog" / "cat")
+let selfId = null;
+// Meeting another pet (src/net/party.ts): Mochi's trick at 6 s, as in MEET_TRICKS there.
+const MEET_TRICK_S = 6;
+const TRICK_S = { spin: 1.6, jump: 1.3 };
+let meetTrick = null; // { kind, start } in secs()
+function joinMeet(other, asInitiator) {
+  const kind = asInitiator && kinds.get(other) !== "cat" ? "spin" : "jump";
+  meetTrick = { kind, start: secs() + MEET_TRICK_S };
+}
 const t0 = performance.now();
 let done = false;
 
@@ -48,16 +59,22 @@ ws.addEventListener("message", (e) => {
   if (e.data === "pong") return;
   const m = JSON.parse(e.data);
   if (m.t === "welcome") {
-    for (const p of m.peers) peers.set(p.id, nameOf(p.pet));
+    selfId = m.id;
+    for (const p of m.peers) {
+      peers.set(p.id, nameOf(p.pet));
+      kinds.set(p.id, p.pet?.kind);
+    }
     log(`Mochi is in room ${room.toUpperCase()}. Already here: ${[...peers.values()].join(", ") || "nobody yet"}`);
   } else if (m.t === "peer") {
     if (!peers.has(m.id)) log(`${nameOf(m.pet)} joined`);
     peers.set(m.id, nameOf(m.pet));
+    kinds.set(m.id, m.pet?.kind);
   } else if (m.t === "leave") {
     log(`${peers.get(m.id) ?? m.id} left`);
     peers.delete(m.id);
   } else if (m.t === "e") {
     log(`${peers.get(m.id) ?? m.id}: ${JSON.stringify(m.d)}`);
+    if (m.d?.k === "meet" && m.d.to === selfId && !m.d.stay) joinMeet(m.id, false);
   } else if (m.t === "full") {
     log("The room is full");
   }
@@ -80,7 +97,7 @@ function routine(t) {
   if (c < 10) return { sit: Math.min(1, (c - 6) / 0.5), pet: c > 7 && c < 9 };
   if (c < 13) return { trick: "spin", start: cycle + 10, dur: 1.6 };
   if (c < 20) return { trick: "rollOver", start: cycle + 17, dur: 2.8 };
-  return {};
+  return { meet: c >= 20.5 };
 }
 
 let phase = 0;
@@ -90,6 +107,7 @@ let h = 0;
 let lastTrick = -1;
 let lastSit = -1;
 let lastPet = 0;
+let lastMeet = -1;
 let last = performance.now();
 
 const ticker = setInterval(() => {
@@ -118,6 +136,19 @@ const ticker = setInterval(() => {
     send({ t: "e", d: { k: "cmd", c: "sit" } });
   }
   const target = [...peers.keys()][0];
+  // Once a cycle, while standing (20-24 s), Mochi goes to say hi to your pet.
+  if (r.meet && target && Math.floor(t / 24) !== lastMeet) {
+    lastMeet = Math.floor(t / 24);
+    send({ t: "e", d: { k: "meet", to: target, stay: false } });
+    joinMeet(target, true);
+    log(`Mochi goes to say hi to ${peers.get(target)}`);
+  }
+  if (meetTrick) {
+    // The meeting's trick wins over the routine's (a pet in a meeting does what the meeting says).
+    const p = (t - meetTrick.start) / TRICK_S[meetTrick.kind];
+    if (p > 1) meetTrick = null;
+    else if (p >= 0) trick = [meetTrick.kind, Math.round(p * 1000) / 1000];
+  }
   if (r.pet && target && now - lastPet >= 250) {
     lastPet = now;
     send({ t: "e", d: { k: "pet", to: target, z: "head" } });

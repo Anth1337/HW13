@@ -3,7 +3,7 @@ import { petGaitInfo } from "../models/pet";
 import type { Species } from "../pets";
 import type { PerceivedFace, PerceivedHand, PerceivedPerson } from "../vision/types";
 import { TRICK_DURATION } from "./types";
-import type { DogBrain, DogCommand, DogMode, DogZones, PetCharacter, TrickKind } from "./types";
+import type { DogBrain, DogCommand, DogMode, DogZones, PetCharacter, PetSocial, TrickKind } from "./types";
 
 /*
  * The pet's brain, for any species (what differs per species is in PROFILES): perception
@@ -15,7 +15,7 @@ import type { DogBrain, DogCommand, DogMode, DogZones, PetCharacter, TrickKind }
  *   1. perception bookkeeping (petting zones, engaged hand, eye-contact partner)
  *      — organised per PERSON: hands/faces carry a personId (null = anonymous, keyed by its own id)
  *   2. behaviour picks ONE locomotion goal (`want`: target point / speed / facing), by priority:
- *      trick > hand > come / goTo > mode (follow / free / stay)
+ *      trick > petting > another pet (social) > hand > come / goTo > mode (follow / free / stay)
  *   3. postures (sit / lie / stand-up-before-walking) and locomotion steer the anchor
  *   4. look target (hand > eye contact > glance at the user > idle), sniff, excitement, status
  *
@@ -344,6 +344,7 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
   let comeActive = false;
   let goToActive = false;
   const goToPt = new THREE.Vector3();
+  let social: PetSocial | null = null;
   let following = false; // follow mode: currently catching up
   let comeFacing = false; // come: arrived, turning to face the user
   let comeIgnoreUntil = -1; // come: pretending not to hear until then (cats)
@@ -929,6 +930,7 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
     | "come"
     | "ignore"
     | "goTo"
+    | "social"
     | "follow"
     | "free"
     | "stay";
@@ -960,7 +962,31 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       return;
     }
 
-    // 2b. A hand of interest.
+    // 2b. Another pet: walk up nose to nose, then face it.
+    if (social) {
+      activity = "social";
+      const s = social.stand;
+      let d = 0;
+      let tx = ax;
+      let tz = az;
+      if (s) {
+        // Keep the nose out of the camera's way (the phone holder may stand between the pets).
+        let fx = social.face.x - s.x;
+        let fz = social.face.z - s.z;
+        const fl = Math.hypot(fx, fz) || 1;
+        fx /= fl;
+        fz /= fl;
+        keepOutNose(s.x + fx * noseF, s.z + fz * noseF, VIEWER_KEEPOUT);
+        tx = tmp.x - fx * noseF;
+        tz = tmp.z - fz * noseF;
+        d = Math.hypot(tx - ax, tz - az);
+      }
+      if (s && (d > 0.06 || (v > 0.02 && d > 0.015))) setWant(tx, tz, speedForDistance(d), 0.03);
+      else if (postureCmd === "stand") setFace(social.face.x, social.face.z);
+      return;
+    }
+
+    // 2c. A hand of interest.
     if (engagedId !== null) {
       // Don't walk off while a hand is settling into a petting zone.
       const dwelling = pets.head.dwellStart !== null || pets.body.dwellStart !== null;
@@ -1386,6 +1412,10 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       desiredW.copy(pets.body.point);
       return 0.6;
     }
+    if (activity === "social" && social) {
+      desiredW.copy(social.look);
+      return 1;
+    }
     if (engagedId !== null) {
       // A hand right above / behind the eyes would make the head aim flip around: keep the
       // look target at least a little in front of the eyes.
@@ -1461,6 +1491,8 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
         return prof.status.ignore;
       case "goTo":
         return "On the way";
+      case "social":
+        return social?.status ?? "";
       default:
         break;
     }
@@ -1622,6 +1654,7 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       if (handSniffing) sniffT = 1;
       else if (activity === "handApproach" && engagedPalm.distanceTo(nose) < 0.45) sniffT = 0.4;
       else if (activity === "free" && freeActivity === "sniff" && v < 0.1) sniffT = 1;
+      else if (activity === "social" && social && v < 0.1) sniffT = social.sniff;
       else if (activity === "follow" && now < idleSniffUntil && v < 0.1 && postureCmd === "stand") sniffT = 0.8;
       controls.sniff = approach(controls.sniff, sniffT, dt, 0.25);
 
@@ -1630,6 +1663,7 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
       if (activity === "follow" && v > V_TROT * 0.9) exT = 0.6;
       if (engagedId !== null && !engagedNear) exT = 0.7;
       if (now < listenUntil) exT = Math.max(exT, 0.6);
+      if (activity === "social") exT = 0.85;
       if (headOn || bodyOn) exT = 0.95;
       if (trickRunning) exT = 1;
       excitement = approach(excitement, exT, dt, exT > excitement ? 0.4 : 3);
@@ -1756,6 +1790,25 @@ export function createPetBrain(dog: PetCharacter, anchor: THREE.Object3D, floorY
     },
     get attentionPerson(): number | null {
       return attention;
+    },
+    social(s: PetSocial | null): void {
+      // Get up once when a meeting starts; a sit / lie said during it is then respected.
+      // come / goTo wait (social outranks them) and carry on afterwards.
+      if (s && !social && s.stand) {
+        setPosture("stand", false);
+        following = false;
+      }
+      social = s;
+    },
+    get sociable(): boolean {
+      return (
+        (activity === "follow" || activity === "free") &&
+        engagedId === null &&
+        !trickRunning &&
+        pendingTrick === null &&
+        !comeActive &&
+        !goToActive
+      );
     },
     onPetStart(fn: (zone: Zone, worldPoint: THREE.Vector3) => void): () => void {
       petListeners.add(fn);
