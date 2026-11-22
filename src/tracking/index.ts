@@ -1,4 +1,5 @@
 export type {
+  ExclusionRect,
   MotionPermission,
   RequestMotionPermission,
   TrackedPose,

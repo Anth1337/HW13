@@ -84,6 +84,8 @@ const HAND_DROP_AGE = 1;
 const FACE_DROP_AGE = 2.5;
 const BODY_DROP_AGE = 2.5;
 const DRAW_AGE = 0.5; // s: keep drawing landmarks this long after the last detection
+/** handBoxes(): boxes of a detection older than this are dropped (the hand has moved on). */
+const HAND_BOX_AGE = 0.5;
 /** A mode note (e.g. "no camera image") shows alone this long, then the dog's status takes over. */
 const NOTE_SOLO_S = 8;
 
@@ -184,6 +186,12 @@ export interface DogPlay {
   /** A mode-specific message for the status chip (null clears it). */
   setNote(text: string | null): void;
   readonly perception: Perception;
+  /**
+   * Image boxes (uv over the whole detected frame, v down) of the hands in the latest detection,
+   * min/max of the 21 landmarks; [] once that detection is older than HAND_BOX_AGE. Camera mode
+   * masks them out of the floor odometry so a reaching hand is not read as camera motion.
+   */
+  handBoxes(): { u0: number; v0: number; u1: number; v1: number }[];
   dispose(): void;
 }
 
@@ -678,6 +686,24 @@ export function createDogPlay(scene: THREE.Scene, ui: PlayUI, uvToScreen: UVToSc
     },
     get perception() {
       return perception;
+    },
+    handBoxes() {
+      if (observationAge > HAND_BOX_AGE) return [];
+      const out: { u0: number; v0: number; u1: number; v1: number }[] = [];
+      for (const hand of observation.hands) {
+        let u0 = Infinity,
+          v0 = Infinity,
+          u1 = -Infinity,
+          v1 = -Infinity;
+        for (const p of hand.landmarks) {
+          u0 = Math.min(u0, p.u);
+          v0 = Math.min(v0, p.v);
+          u1 = Math.max(u1, p.u);
+          v1 = Math.max(v1, p.v);
+        }
+        if (u1 > u0 && v1 > v0) out.push({ u0, v0, u1, v1 });
+      }
+      return out;
     },
     get handOcclusion() {
       return handOcclusion;
